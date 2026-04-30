@@ -448,7 +448,7 @@ export class VisualDashboardView extends ItemView {
 		folderSet.add('/'); // Add root
 		this.app.vault.getAllLoadedFiles().forEach(file => {
 			if ('children' in file && file.children !== undefined) {
-				if (file.path) folderSet.add(file.path);
+				if (file.path && file.path !== '/' && file.path !== '') folderSet.add(file.path);
 			}
 		});
 		this.allFolders = Array.from(folderSet).sort();

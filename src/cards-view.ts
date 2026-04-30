@@ -32,6 +32,9 @@ export class VisualDashboardView extends ItemView {
 	private selectedSuggestionIndex: number = -1;
 	private currentSuggestions: Array<{ type: string; value: string; display: string }> = [];
 	private currentSuggestionQuery: string = '';
+	
+	// Undo state
+	private deletedNotesStack: { path: string; content: string }[] = [];
 	private activeColorDropdown: HTMLElement | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: VisualDashboardPlugin) {
@@ -229,6 +232,29 @@ export class VisualDashboardView extends ItemView {
 		this.registerEvent(
 			this.app.vault.on('rename', () => this.debouncedRefresh())
 		);
+
+		// Handle Ctrl+Z / Cmd+Z for undoing deletions
+		this.registerDomEvent(document, 'keydown', async (e: KeyboardEvent) => {
+			// Only handle if this view is the active one in the workspace
+			if (this.app.workspace.getActiveViewOfType(VisualDashboardView) !== this) return;
+			
+			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+				const lastDeleted = this.deletedNotesStack.pop();
+				if (lastDeleted) {
+					e.preventDefault();
+					try {
+						// Double check it doesn't already exist
+						const fileExists = this.app.vault.getAbstractFileByPath(lastDeleted.path);
+						if (!fileExists) {
+							await this.app.vault.create(lastDeleted.path, lastDeleted.content);
+							void this.renderCards();
+						}
+					} catch (error) {
+						console.error('Failed to restore deleted note:', error);
+					}
+				}
+			}
+		});
 	}
 
 	private async refreshView() {
@@ -393,7 +419,7 @@ export class VisualDashboardView extends ItemView {
 
 	async renderCards() {
 		try {
-			this.miniNotesGrid.empty();
+			// Do not empty the grid immediately, we need to gather the new DOM first for smooth view transitions
 
 			// Get all markdown files, filtered by source folder if specified
 			let files = this.app.vault.getMarkdownFiles();
@@ -433,7 +459,7 @@ export class VisualDashboardView extends ItemView {
 		folderSet.add('/'); // Add root
 		this.app.vault.getAllLoadedFiles().forEach(file => {
 			if ('children' in file && file.children !== undefined) {
-				if (file.path) folderSet.add(file.path);
+				if (file.path && file.path !== '/' && file.path !== '') folderSet.add(file.path);
 			}
 		});
 		this.allFolders = Array.from(folderSet).sort();
@@ -477,9 +503,20 @@ export class VisualDashboardView extends ItemView {
 		this.currentFiles = [...pinnedFiles, ...unpinnedFiles];
 
 		if (files.length === 0) {
-			const emptyState = this.miniNotesGrid.createDiv({ cls: 'dashboard-empty-state' });
-			emptyState.createEl('h3', { text: 'No matching notes' });
-			emptyState.createEl('p', { text: 'Try adjusting your filters' });
+			const applyEmpty = () => {
+				this.miniNotesGrid.empty();
+				const emptyState = this.miniNotesGrid.createDiv({ cls: 'dashboard-empty-state' });
+				emptyState.createEl('h3', { text: 'No matching notes' });
+				emptyState.createEl('p', { text: 'Try adjusting your filters' });
+			};
+			
+			// @ts-ignore - View Transitions API
+			if (document.startViewTransition) {
+				// @ts-ignore
+				document.startViewTransition(() => applyEmpty());
+			} else {
+				applyEmpty();
+			}
 			return;
 		}
 
@@ -487,11 +524,12 @@ export class VisualDashboardView extends ItemView {
 
 		// Check if we need sections (both pinned and unpinned exist)
 		const needsSections = pinnedFiles.length > 0 && unpinnedFiles.length > 0;
+		const fragment = document.createDocumentFragment();
 
 		if (needsSections) {
 			// Render pinned section
 			if (pinnedFiles.length > 0) {
-				const pinnedGrid = this.miniNotesGrid.createDiv({ cls: 'mini-notes-grid-section' });
+				const pinnedGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 				for (const file of pinnedFiles) {
 					const card = await this.createCard(file, globalIndex++);
 					if (card) pinnedGrid.appendChild(card);
@@ -499,11 +537,11 @@ export class VisualDashboardView extends ItemView {
 			}
 
 			// Separator line between sections
-			this.miniNotesGrid.createDiv({ cls: 'section-separator' });
+			fragment.createEl('div', { cls: 'section-separator' });
 
 			// Render all notes section
 			if (unpinnedFiles.length > 0) {
-				const notesGrid = this.miniNotesGrid.createDiv({ cls: 'mini-notes-grid-section' });
+				const notesGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 				for (const file of unpinnedFiles) {
 					const card = await this.createCard(file, globalIndex++);
 					if (card) notesGrid.appendChild(card);
@@ -511,11 +549,24 @@ export class VisualDashboardView extends ItemView {
 			}
 		} else {
 			// Single section without header
-			const singleGrid = this.miniNotesGrid.createDiv({ cls: 'mini-notes-grid-section' });
+			const singleGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 			for (const file of [...pinnedFiles, ...unpinnedFiles]) {
 				const card = await this.createCard(file, globalIndex++);
 				if (card) singleGrid.appendChild(card);
 			}
+		}
+
+		const applyDOM = () => {
+			this.miniNotesGrid.empty();
+			this.miniNotesGrid.appendChild(fragment);
+		};
+
+		// @ts-ignore - Document View Transitions API
+		if (document.startViewTransition) {
+			// @ts-ignore
+			document.startViewTransition(() => applyDOM());
+		} else {
+			applyDOM();
 		}
 		} catch (error) {
 			console.error('Error rendering cards:', error);
@@ -537,6 +588,10 @@ export class VisualDashboardView extends ItemView {
 		card.setAttribute('data-path', file.path);
 		card.setAttribute('data-index', index.toString());
 		card.setAttribute('draggable', 'true');
+		
+		// Add isolated View Transition Name to smoothly animate layout bumps
+		const safeCssIdent = 'card-' + file.path.replace(/[^a-zA-Z0-9_-]/g, '-');
+		card.style.setProperty('view-transition-name', safeCssIdent);
 
 		try {
 			// Get content and preview
@@ -745,6 +800,24 @@ export class VisualDashboardView extends ItemView {
 		// Date on right
 		const dateSpan = cardFooter.createSpan({ cls: 'card-date' });
 		dateSpan.createSpan({ text: formatDate(file.stat.mtime) });
+
+		// Middle-click handler to delete the note
+		card.addEventListener('auxclick', async (e: MouseEvent) => {
+			if (e.button === 1) { // Middle click button
+				e.preventDefault();
+				try {
+					// Save to undo stack before trashing
+					const contentToSave = await this.app.vault.read(file);
+					this.deletedNotesStack.push({ path: file.path, content: contentToSave });
+				} catch (err) {
+					console.error('Could not save note content for undo', err);
+				}
+				
+				await this.app.fileManager.trashFile(file);
+				// Trigger immediate layout refresh instead of waiting 1 second for the vault event debouncer
+				void this.renderCards();
+			}
+		});
 
 		// Click handler to open the note
 		card.addEventListener('click', (e: MouseEvent) => {

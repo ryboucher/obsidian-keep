@@ -33,7 +33,7 @@ export class MiniNotesSettingTab extends PluginSettingTab {
 				const folders = this.app.vault.getAllLoadedFiles()
 					.filter(file => 'children' in file && file.children !== undefined)
 					.map(folder => folder.path)
-					.filter(path => path !== '');
+					.filter(path => path !== '' && path !== '/');
 				
 				dropdown.addOption('/', 'All notes');
 				
@@ -58,7 +58,7 @@ export class MiniNotesSettingTab extends PluginSettingTab {
 				const folders = this.app.vault.getAllLoadedFiles()
 					.filter(file => 'children' in file && file.children !== undefined)
 					.map(folder => folder.path)
-					.filter(path => path !== '');
+					.filter(path => path !== '' && path !== '/');
 				
 				// Add root as an option
 				dropdown.addOption('/', 'Root folder');

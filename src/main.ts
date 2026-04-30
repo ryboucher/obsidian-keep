@@ -59,8 +59,20 @@ export default class VisualDashboardPlugin extends Plugin {
 	async loadPluginData() {
 		try {
 			const loadedData = await this.loadData() as DashboardData | null;
+			const isFirstInstall = loadedData === null;
 			this.data = Object.assign({}, DEFAULT_DATA, loadedData ?? {});
 			
+			if (isFirstInstall) {
+				const folderPath = 'Mini Notes';
+				if (!this.app.vault.getAbstractFileByPath(folderPath)) {
+					try {
+						await this.app.vault.createFolder(folderPath);
+					} catch (e) {
+						console.error('Failed to create default Mini Notes folder:', e);
+					}
+				}
+			}
+
 			// Migration: if sourceFolder is empty string, use the new default
 			if (this.data.sourceFolder === '') {
 				this.data.sourceFolder = DEFAULT_DATA.sourceFolder;

@@ -32,6 +32,9 @@ export class VisualDashboardView extends ItemView {
 	private selectedSuggestionIndex: number = -1;
 	private currentSuggestions: Array<{ type: string; value: string; display: string }> = [];
 	private currentSuggestionQuery: string = '';
+	
+	// Undo state
+	private deletedNotesStack: { path: string; content: string }[] = [];
 
 	constructor(leaf: WorkspaceLeaf, plugin: VisualDashboardPlugin) {
 		super(leaf);
@@ -228,6 +231,29 @@ export class VisualDashboardView extends ItemView {
 		this.registerEvent(
 			this.app.vault.on('rename', () => this.debouncedRefresh())
 		);
+
+		// Handle Ctrl+Z / Cmd+Z for undoing deletions
+		this.registerDomEvent(document, 'keydown', async (e: KeyboardEvent) => {
+			// Only handle if this view is the active one in the workspace
+			if (this.app.workspace.getActiveViewOfType(VisualDashboardView) !== this) return;
+			
+			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+				const lastDeleted = this.deletedNotesStack.pop();
+				if (lastDeleted) {
+					e.preventDefault();
+					try {
+						// Double check it doesn't already exist
+						const fileExists = this.app.vault.getAbstractFileByPath(lastDeleted.path);
+						if (!fileExists) {
+							await this.app.vault.create(lastDeleted.path, lastDeleted.content);
+							void this.renderCards();
+						}
+					} catch (error) {
+						console.error('Failed to restore deleted note:', error);
+					}
+				}
+			}
+		});
 	}
 
 	private async refreshView() {
@@ -763,6 +789,14 @@ export class VisualDashboardView extends ItemView {
 		card.addEventListener('auxclick', async (e: MouseEvent) => {
 			if (e.button === 1) { // Middle click button
 				e.preventDefault();
+				try {
+					// Save to undo stack before trashing
+					const contentToSave = await this.app.vault.read(file);
+					this.deletedNotesStack.push({ path: file.path, content: contentToSave });
+				} catch (err) {
+					console.error('Could not save note content for undo', err);
+				}
+				
 				await this.app.fileManager.trashFile(file);
 				// Trigger immediate layout refresh instead of waiting 1 second for the vault event debouncer
 				void this.renderCards();

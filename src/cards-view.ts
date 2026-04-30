@@ -382,7 +382,7 @@ export class VisualDashboardView extends ItemView {
 
 	async renderCards() {
 		try {
-			this.miniNotesGrid.empty();
+			// Do not empty the grid immediately, we need to gather the new DOM first for smooth view transitions
 
 			// Get all markdown files, filtered by source folder if specified
 			let files = this.app.vault.getMarkdownFiles();
@@ -466,9 +466,20 @@ export class VisualDashboardView extends ItemView {
 		this.currentFiles = [...pinnedFiles, ...unpinnedFiles];
 
 		if (files.length === 0) {
-			const emptyState = this.miniNotesGrid.createDiv({ cls: 'dashboard-empty-state' });
-			emptyState.createEl('h3', { text: 'No matching notes' });
-			emptyState.createEl('p', { text: 'Try adjusting your filters' });
+			const applyEmpty = () => {
+				this.miniNotesGrid.empty();
+				const emptyState = this.miniNotesGrid.createDiv({ cls: 'dashboard-empty-state' });
+				emptyState.createEl('h3', { text: 'No matching notes' });
+				emptyState.createEl('p', { text: 'Try adjusting your filters' });
+			};
+			
+			// @ts-ignore - View Transitions API
+			if (document.startViewTransition) {
+				// @ts-ignore
+				document.startViewTransition(() => applyEmpty());
+			} else {
+				applyEmpty();
+			}
 			return;
 		}
 
@@ -476,11 +487,12 @@ export class VisualDashboardView extends ItemView {
 
 		// Check if we need sections (both pinned and unpinned exist)
 		const needsSections = pinnedFiles.length > 0 && unpinnedFiles.length > 0;
+		const fragment = document.createDocumentFragment();
 
 		if (needsSections) {
 			// Render pinned section
 			if (pinnedFiles.length > 0) {
-				const pinnedGrid = this.miniNotesGrid.createDiv({ cls: 'mini-notes-grid-section' });
+				const pinnedGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 				for (const file of pinnedFiles) {
 					const card = await this.createCard(file, globalIndex++);
 					if (card) pinnedGrid.appendChild(card);
@@ -488,11 +500,11 @@ export class VisualDashboardView extends ItemView {
 			}
 
 			// Separator line between sections
-			this.miniNotesGrid.createDiv({ cls: 'section-separator' });
+			fragment.createEl('div', { cls: 'section-separator' });
 
 			// Render all notes section
 			if (unpinnedFiles.length > 0) {
-				const notesGrid = this.miniNotesGrid.createDiv({ cls: 'mini-notes-grid-section' });
+				const notesGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 				for (const file of unpinnedFiles) {
 					const card = await this.createCard(file, globalIndex++);
 					if (card) notesGrid.appendChild(card);
@@ -500,11 +512,24 @@ export class VisualDashboardView extends ItemView {
 			}
 		} else {
 			// Single section without header
-			const singleGrid = this.miniNotesGrid.createDiv({ cls: 'mini-notes-grid-section' });
+			const singleGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 			for (const file of [...pinnedFiles, ...unpinnedFiles]) {
 				const card = await this.createCard(file, globalIndex++);
 				if (card) singleGrid.appendChild(card);
 			}
+		}
+
+		const applyDOM = () => {
+			this.miniNotesGrid.empty();
+			this.miniNotesGrid.appendChild(fragment);
+		};
+
+		// @ts-ignore - Document View Transitions API
+		if (document.startViewTransition) {
+			// @ts-ignore
+			document.startViewTransition(() => applyDOM());
+		} else {
+			applyDOM();
 		}
 		} catch (error) {
 			console.error('Error rendering cards:', error);
@@ -526,6 +551,10 @@ export class VisualDashboardView extends ItemView {
 		card.setAttribute('data-path', file.path);
 		card.setAttribute('data-index', index.toString());
 		card.setAttribute('draggable', 'true');
+		
+		// Add isolated View Transition Name to smoothly animate layout bumps
+		const safeCssIdent = 'card-' + file.path.replace(/[^a-zA-Z0-9_-]/g, '-');
+		card.style.setProperty('view-transition-name', safeCssIdent);
 
 		try {
 			// Get content and preview
@@ -735,6 +764,8 @@ export class VisualDashboardView extends ItemView {
 			if (e.button === 1) { // Middle click button
 				e.preventDefault();
 				await this.app.fileManager.trashFile(file);
+				// Trigger immediate layout refresh instead of waiting 1 second for the vault event debouncer
+				void this.renderCards();
 			}
 		});
 

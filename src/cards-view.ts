@@ -730,6 +730,14 @@ export class VisualDashboardView extends ItemView {
 		const dateSpan = cardFooter.createSpan({ cls: 'card-date' });
 		dateSpan.createSpan({ text: formatDate(file.stat.mtime) });
 
+		// Middle-click handler to delete the note
+		card.addEventListener('auxclick', async (e: MouseEvent) => {
+			if (e.button === 1) { // Middle click button
+				e.preventDefault();
+				await this.app.fileManager.trashFile(file);
+			}
+		});
+
 		// Click handler to open the note
 		card.addEventListener('click', (e: MouseEvent) => {
 			// Don't open if clicking pin button or during drag

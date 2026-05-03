@@ -721,31 +721,31 @@
     white-space: nowrap;
 }
 
-/* Google Keep-inspired text styling for colored cards in dark theme */
+/* Text on colored cards in dark theme — use Obsidian tokens, not hardcoded */
 .theme-dark .dashboard-card[style*="background-color"] .card-title {
-    color: #E8EAED;
+    color: var(--text-normal);
     font-weight: 500;
 }
 
 .theme-dark .dashboard-card[style*="background-color"] .card-preview {
-    color: #E8EAED;
+    color: var(--text-normal);
     opacity: 0.9;
 }
 
 .theme-dark .dashboard-card[style*="background-color"] .card-date {
-    color: rgba(232, 234, 237, 0.7);
+    color: var(--text-muted);
 }
 
 .theme-dark .dashboard-card[style*="background-color"] .card-tag {
-    color: #E8EAED;
-    background: rgba(232, 234, 237, 0.15);
-    border: 1px solid rgba(232, 234, 237, 0.2);
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+    border: 1px solid var(--background-modifier-border);
 }
 
 /* Tags on cards without custom color in dark theme */
 .theme-dark .dashboard-card:not([style*="background-color"]) .card-tag {
-    color: #E8EAED;
-    background: rgba(232, 234, 237, 0.1);
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
 }
 
 /* ============================================

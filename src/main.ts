@@ -114,6 +114,28 @@ export default class VisualDashboardPlugin extends Plugin {
 		}
 	}
 
+	isBookmarked(folderPath: string): boolean {
+		return this.data.bookmarkedFolders.includes(folderPath);
+	}
+
+	async toggleBookmark(folderPath: string): Promise<boolean> {
+		try {
+			const index = this.data.bookmarkedFolders.indexOf(folderPath);
+			if (index > -1) {
+				this.data.bookmarkedFolders.splice(index, 1);
+				await this.savePluginData();
+				return false;
+			} else {
+				this.data.bookmarkedFolders.push(folderPath);
+				await this.savePluginData();
+				return true;
+			}
+		} catch (error) {
+			console.error('Error toggling bookmark:', error);
+			return this.isBookmarked(folderPath);
+		}
+	}
+
 	getOrderIndex(filePath: string): number {
 		return this.data.noteOrder.indexOf(filePath);
 	}

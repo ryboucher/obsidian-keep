@@ -1,4 +1,4 @@
-import { ItemView, TFile, WorkspaceLeaf, setIcon, MarkdownRenderer, Platform } from 'obsidian';
+import { ItemView, TFile, TFolder, WorkspaceLeaf, setIcon, MarkdownRenderer, Platform } from 'obsidian';
 import type VisualDashboardPlugin from './main';
 import { VIEW_TYPE_VISUAL_DASHBOARD } from './utils/types';
 import { extractTags, getPreviewText, stripMarkdown } from './utils/markdown';
@@ -45,6 +45,13 @@ export class VisualDashboardView extends ItemView {
 	private fileTagsCache: Map<string, string[]> = new Map();
 	private cardObserver: IntersectionObserver | null = null;
 
+	// Drawer state
+	private drawerEl: HTMLElement | null = null;
+	private scrimEl: HTMLElement | null = null;
+	private drawerOpen = false;
+	private activeFilterFolder: string | null = null;
+	private navigatedFolder: string | null = null;
+
 	constructor(leaf: WorkspaceLeaf, plugin: VisualDashboardPlugin) {
 		super(leaf);
 		this.plugin = plugin;
@@ -76,7 +83,7 @@ export class VisualDashboardView extends ItemView {
 		// Create header - single row
 		const header = this.contentEl.createDiv({ cls: 'dashboard-header' });
 
-		// Title on left
+		// Title
 		const title = header.createEl('h1', { text: this.plugin.data.viewTitle || 'Do Your Best Today!', cls: 'dashboard-title editable-title' });
 		title.setAttribute('contenteditable', 'true');
 		title.setAttribute('spellcheck', 'false');
@@ -103,6 +110,11 @@ export class VisualDashboardView extends ItemView {
 
 		// Controls on right
 		const controls = header.createDiv({ cls: 'header-controls' });
+
+		// Hamburger menu button (left of search)
+		const hamburgerBtn = controls.createEl('button', { cls: 'drawer-hamburger', attr: { 'aria-label': 'Open folder drawer' } });
+		setIcon(hamburgerBtn, 'menu');
+		hamburgerBtn.addEventListener('click', () => this.toggleDrawer());
 
 		// Search bar with autocomplete
 		const searchContainer = controls.createDiv({ cls: 'search-container' });
@@ -208,6 +220,16 @@ export class VisualDashboardView extends ItemView {
 			await this.plugin.createMiniNote();
 		});
 
+		// Breadcrumb bar (visible when navigated into a folder)
+		this.contentEl.createDiv({ cls: 'breadcrumb-bar', attr: { style: 'display:none' } });
+
+		// Scrim overlay
+		this.scrimEl = this.contentEl.createDiv({ cls: 'drawer-scrim' });
+		this.scrimEl.addEventListener('click', () => this.toggleDrawer(false));
+
+		// Drawer
+		this.drawerEl = this.contentEl.createDiv({ cls: 'folder-drawer' });
+
 		// Create mini notes grid container
 		this.miniNotesGrid = this.contentEl.createDiv({ cls: 'mini-notes-grid' });
 
@@ -278,6 +300,29 @@ export class VisualDashboardView extends ItemView {
 		
 		// Re-render cards to reflect setting changes
 		await this.renderCards();
+	}
+
+	private crossfadeGrid(applyFn: () => void) {
+		const grid = this.miniNotesGrid;
+
+		// Phase 1: fade out to fully invisible
+		grid.addClass('grid-fading-out');
+
+		// Phase 2: after fade-out completes, swap content while invisible, then fade in
+		setTimeout(() => {
+			// Set instant-zero so content swap is invisible
+			grid.removeClass('grid-fading-out');
+			grid.addClass('grid-fading-in');
+
+			applyFn();
+
+			// Force reflow so browser registers opacity:0 on new content
+			void grid.offsetHeight;
+
+			// Phase 3: fade in
+			grid.removeClass('grid-fading-in');
+			// opacity transitions back to 1 via the base .mini-notes-grid rule
+		}, 150);
 	}
 
 	private debouncedRefresh() {
@@ -435,6 +480,200 @@ export class VisualDashboardView extends ItemView {
 		}, 10000);
 	}
 
+	private toggleDrawer(forceState?: boolean) {
+		this.drawerOpen = forceState ?? !this.drawerOpen;
+		this.drawerEl?.toggleClass('open', this.drawerOpen);
+		this.scrimEl?.toggleClass('open', this.drawerOpen);
+		if (this.drawerOpen) {
+			this.renderDrawerContents();
+		}
+	}
+
+	private renderDrawerContents() {
+		if (!this.drawerEl) return;
+		this.drawerEl.empty();
+
+		const drawerHeader = this.drawerEl.createDiv({ cls: 'drawer-header' });
+		drawerHeader.createEl('h2', { text: 'Folders' });
+
+		const drawerScroll = this.drawerEl.createDiv({ cls: 'drawer-scroll' });
+
+		// "All Notes" row — always first
+		const allNotesRow = drawerScroll.createDiv({ cls: 'drawer-folder-item' + (this.activeFilterFolder === null && this.navigatedFolder === null ? ' active' : '') });
+		const allNotesIcon = allNotesRow.createDiv({ cls: 'drawer-folder-icon' });
+		setIcon(allNotesIcon, 'home');
+		allNotesRow.createSpan({ cls: 'drawer-folder-name', text: 'All Notes' });
+		const totalNotes = this.app.vault.getMarkdownFiles().length;
+		allNotesRow.createSpan({ cls: 'drawer-folder-count', text: String(totalNotes) });
+		allNotesRow.addEventListener('click', () => {
+			this.activeFilterFolder = null;
+			this.navigatedFolder = null;
+			this.updateBreadcrumb();
+			this.toggleDrawer(false);
+			void this.renderCards();
+		});
+
+		// Bookmarks section
+		const bookmarkedFolders = this.plugin.data.bookmarkedFolders;
+		if (bookmarkedFolders.length > 0) {
+			drawerScroll.createDiv({ cls: 'drawer-divider' });
+			drawerScroll.createDiv({ cls: 'drawer-section-label', text: 'Bookmarks' });
+
+			for (const folderPath of bookmarkedFolders) {
+				const folder = this.app.vault.getAbstractFileByPath(folderPath);
+				if (!folder || !(folder instanceof TFolder)) continue;
+
+				const isActive = this.activeFilterFolder === folderPath || this.navigatedFolder === folderPath;
+				const row = drawerScroll.createDiv({ cls: 'drawer-folder-item' + (isActive ? ' active' : '') });
+
+				const iconEl = row.createDiv({ cls: 'drawer-folder-icon' });
+				setIcon(iconEl, 'folder');
+				row.createSpan({ cls: 'drawer-folder-name', text: folder.name });
+				const noteCount = this.countNotesInFolder(folderPath);
+				row.createSpan({ cls: 'drawer-folder-count', text: String(noteCount) });
+
+				const starBtn = row.createEl('button', { cls: 'folder-star-btn starred', text: '\u2605', attr: { 'aria-label': 'Remove bookmark' } });
+				starBtn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					void this.plugin.toggleBookmark(folderPath).then(() => this.renderDrawerContents());
+				});
+
+				this.attachFolderRowEvents(row, folderPath);
+			}
+		}
+
+		// Divider + All Folders tree
+		drawerScroll.createDiv({ cls: 'drawer-divider' });
+		drawerScroll.createDiv({ cls: 'drawer-section-label', text: 'All Folders' });
+
+		const rootFolder = this.app.vault.getRoot();
+		this.renderFolderTree(drawerScroll, rootFolder, 0);
+	}
+
+	private attachFolderRowEvents(row: HTMLElement, folderPath: string) {
+		// Tap = filter
+		row.addEventListener('click', () => {
+			this.activeFilterFolder = folderPath;
+			this.navigatedFolder = null;
+			this.updateBreadcrumb();
+			this.toggleDrawer(false);
+			void this.renderCards();
+		});
+
+		// Long-press = navigate
+		let longPressTimer: number | null = null;
+		row.addEventListener('pointerdown', () => {
+			longPressTimer = window.setTimeout(() => {
+				this.navigatedFolder = folderPath;
+				this.activeFilterFolder = null;
+				this.updateBreadcrumb();
+				this.toggleDrawer(false);
+				void this.renderCards();
+			}, 500);
+		});
+		row.addEventListener('pointerup', () => { if (longPressTimer) window.clearTimeout(longPressTimer); });
+		row.addEventListener('pointerleave', () => { if (longPressTimer) window.clearTimeout(longPressTimer); });
+	}
+
+	private renderFolderTree(container: HTMLElement, folder: TFolder, depth: number) {
+		if (depth > 4) return;
+		if (folder.path === this.app.vault.configDir) return;
+
+		const children = folder.children
+			.filter((child): child is TFolder => child instanceof TFolder)
+			.filter(child => child.path !== this.app.vault.configDir)
+			.sort((a, b) => a.name.localeCompare(b.name));
+
+		for (const child of children) {
+			const subFolders = child.children.filter((c): c is TFolder => c instanceof TFolder && c.path !== this.app.vault.configDir);
+			const hasChildren = subFolders.length > 0;
+			const isBookmarked = this.plugin.isBookmarked(child.path);
+
+			const row = container.createDiv({ cls: 'drawer-folder-item' });
+			if (depth > 0) row.setAttribute('data-depth', String(depth));
+
+			// Chevron
+			if (hasChildren) {
+				const chevron = row.createDiv({ cls: 'folder-chevron' });
+				setIcon(chevron, 'chevron-right');
+				chevron.addEventListener('click', (e) => {
+					e.stopPropagation();
+					chevron.toggleClass('expanded', !chevron.hasClass('expanded'));
+					const subtree = row.nextElementSibling;
+					if (subtree?.hasClass('folder-subtree')) {
+						(subtree as HTMLElement).toggleClass('collapsed', !subtree.hasClass('collapsed'));
+					}
+				});
+			} else {
+				row.createDiv({ cls: 'folder-chevron-spacer' });
+			}
+
+			const iconEl = row.createDiv({ cls: 'drawer-folder-icon' });
+			setIcon(iconEl, 'folder');
+			row.createSpan({ cls: 'drawer-folder-name', text: child.name });
+
+			const noteCount = this.countNotesInFolder(child.path);
+			row.createSpan({ cls: 'drawer-folder-count', text: String(noteCount) });
+
+			const starBtn = row.createEl('button', {
+				cls: 'folder-star-btn' + (isBookmarked ? ' starred' : ''),
+				text: isBookmarked ? '\u2605' : '\u2606',
+				attr: { 'aria-label': isBookmarked ? 'Remove bookmark' : 'Add bookmark' }
+			});
+			starBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				void this.plugin.toggleBookmark(child.path).then(() => this.renderDrawerContents());
+			});
+
+			this.attachFolderRowEvents(row, child.path);
+
+			if (hasChildren) {
+				const subtree = container.createDiv({ cls: 'folder-subtree collapsed' });
+				this.renderFolderTree(subtree, child, depth + 1);
+			}
+		}
+	}
+
+	private countNotesInFolder(folderPath: string): number {
+		return this.app.vault.getMarkdownFiles()
+			.filter(f => f.path.startsWith(folderPath + '/'))
+			.length;
+	}
+
+	private updateBreadcrumb() {
+		const breadcrumbBar = this.contentEl.querySelector('.breadcrumb-bar') as HTMLElement;
+		if (!breadcrumbBar) return;
+
+		const activeFolder = this.navigatedFolder || this.activeFilterFolder;
+		if (!activeFolder) {
+			breadcrumbBar.style.display = 'none';
+			// Reset title
+			const titleEl = this.contentEl.querySelector('.dashboard-title') as HTMLElement;
+			if (titleEl) titleEl.textContent = this.plugin.data.viewTitle || 'Do Your Best Today!';
+			return;
+		}
+
+		breadcrumbBar.style.display = 'flex';
+		breadcrumbBar.empty();
+
+		const clearBtn = breadcrumbBar.createEl('button', { cls: 'breadcrumb-clear', attr: { 'aria-label': 'Clear folder filter' } });
+		setIcon(clearBtn, 'x');
+		clearBtn.addEventListener('click', () => {
+			this.activeFilterFolder = null;
+			this.navigatedFolder = null;
+			this.updateBreadcrumb();
+			void this.renderCards();
+		});
+
+		const parts = activeFolder.split('/');
+		const crumbContainer = breadcrumbBar.createDiv({ cls: 'breadcrumb-crumbs' });
+		crumbContainer.createSpan({ cls: 'breadcrumb-segment', text: 'Vault' });
+		for (const part of parts) {
+			crumbContainer.createSpan({ cls: 'breadcrumb-separator', text: ' > ' });
+			crumbContainer.createSpan({ cls: 'breadcrumb-segment', text: part });
+		}
+	}
+
 	private closeAllColorDropdowns(except: HTMLElement | null = null) {
 		if (this.activeColorDropdown && this.activeColorDropdown !== except) {
 			this.activeColorDropdown.removeClass('show');
@@ -478,6 +717,12 @@ export class VisualDashboardView extends ItemView {
 			const sourceFolder = this.plugin.data.sourceFolder.trim();
 			if (sourceFolder && sourceFolder !== '/') {
 				files = files.filter((file: TFile) => file.path.startsWith(sourceFolder));
+			}
+
+			// Apply drawer folder filter (tap = filter, long-press = navigate)
+			const drawerFolder = this.navigatedFolder || this.activeFilterFolder;
+			if (drawerFolder) {
+				files = files.filter((file: TFile) => file.path.startsWith(drawerFolder + '/'));
 			}
 			
 		// Filter out config folder files to avoid reading plugin/config files
@@ -573,20 +818,12 @@ export class VisualDashboardView extends ItemView {
 		this.currentFiles = [...pinnedFiles, ...unpinnedFiles];
 
 		if (files.length === 0) {
-			const applyEmpty = () => {
+			this.crossfadeGrid(() => {
 				this.miniNotesGrid.empty();
 				const emptyState = this.miniNotesGrid.createDiv({ cls: 'dashboard-empty-state' });
 				emptyState.createEl('h3', { text: 'No matching notes' });
 				emptyState.createEl('p', { text: 'Try adjusting your filters' });
-			};
-			
-			// @ts-ignore - View Transitions API
-			if (document.startViewTransition) {
-				// @ts-ignore
-				document.startViewTransition(() => applyEmpty());
-			} else {
-				applyEmpty();
-			}
+			});
 			return;
 		}
 
@@ -632,18 +869,10 @@ export class VisualDashboardView extends ItemView {
 			}
 		}
 
-		const applyDOM = () => {
+		this.crossfadeGrid(() => {
 			this.miniNotesGrid.empty();
 			this.miniNotesGrid.appendChild(fragment);
-		};
-
-		// @ts-ignore - Document View Transitions API
-		if (document.startViewTransition) {
-			// @ts-ignore
-			document.startViewTransition(() => applyDOM());
-		} else {
-			applyDOM();
-		}
+		});
 		} catch (error) {
 			console.error('Error rendering cards:', error);
 			const errorMsg = this.miniNotesGrid.createDiv({ cls: 'dashboard-error' });

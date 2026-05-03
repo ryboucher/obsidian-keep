@@ -4,14 +4,15 @@ export const DASHBOARD_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="10
 
 export interface DashboardData {
 	pinnedNotes: string[];
-	noteOrder: string[]; 
-	viewTitle: string; 
-	sourceFolder: string; 
+	noteOrder: string[];
+	viewTitle: string;
+	sourceFolder: string;
 	createFolder: string;
 	maxNotes: number;
 	noteColors: Record<string, string>;
 	themeColor: 'obsidian' | 'black' | 'custom';
 	customThemeColor: string;
+	bookmarkedFolders: string[];
 }
 
 export const DEFAULT_DATA: DashboardData = {
@@ -23,5 +24,6 @@ export const DEFAULT_DATA: DashboardData = {
 	maxNotes: 150,
 	noteColors: {},
 	themeColor: 'obsidian',
-	customThemeColor: '#000000'
+	customThemeColor: '#000000',
+	bookmarkedFolders: []
 };

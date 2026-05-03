@@ -50,6 +50,7 @@ export class VisualDashboardView extends ItemView {
 	private fileTagsCache: Map<string, string[]> = new Map();
 	private cardObserver: IntersectionObserver | null = null;
 	private allFoldersDirty = true;
+	private allTagsDirty = true;
 	private folderCountCache: Map<string, number> = new Map();
 	private searchIndexDirty = true;
 	private cachedSearchIndex: import('minisearch').default<{ id: string; title: string; tags: string; body: string }> | null = null;
@@ -122,7 +123,7 @@ export class VisualDashboardView extends ItemView {
 		const controls = header.createDiv({ cls: 'header-controls' });
 
 		// Hamburger menu button (left of search)
-		const hamburgerBtn = controls.createEl('button', { cls: 'drawer-hamburger', attr: { 'aria-label': 'Open folder drawer' } });
+		const hamburgerBtn = controls.createEl('button', { cls: 'drawer-hamburger', attr: { 'aria-label': 'Open folder drawer', 'aria-expanded': 'false' } });
 		setIcon(hamburgerBtn, 'menu');
 		hamburgerBtn.addEventListener('click', () => this.toggleDrawer());
 
@@ -136,7 +137,7 @@ export class VisualDashboardView extends ItemView {
 			type: 'text',
 			placeholder: 'Search notes (try folder:, tag:, color:, type:, is:pinned)',
 			cls: 'search-input',
-			attr: { 'aria-label': 'Search notes' }
+			attr: { 'aria-label': 'Search notes', role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': 'mini-notes-suggestions' }
 		});
 		
 		searchInput.value = this.filterSearch;
@@ -160,7 +161,7 @@ export class VisualDashboardView extends ItemView {
 		});
 		
 		// Autocomplete suggestions dropdown
-		this.searchSuggestionsEl = searchContainer.createDiv({ cls: 'search-suggestions' });
+		this.searchSuggestionsEl = searchContainer.createDiv({ cls: 'search-suggestions', attr: { role: 'listbox', id: 'mini-notes-suggestions', 'aria-label': 'Search suggestions' } });
 		
 		// Show initial suggestions on focus
 		searchInput.addEventListener('focus', () => {
@@ -240,6 +241,9 @@ export class VisualDashboardView extends ItemView {
 		// Drawer
 		this.drawerEl = this.contentEl.createDiv({ cls: 'folder-drawer' });
 
+		// Screen reader live region for search result count
+		this.contentEl.createDiv({ cls: 'sr-results-live', attr: { 'aria-live': 'polite', role: 'status' } });
+
 		// Create mini notes grid container
 		this.miniNotesGrid = this.contentEl.createDiv({ cls: 'mini-notes-grid' });
 
@@ -266,6 +270,7 @@ export class VisualDashboardView extends ItemView {
 				this.fileMtimeCache.delete(file.path);
 				this.fileContentsCache.delete(file.path);
 				this.searchIndexDirty = true;
+				this.allTagsDirty = true;
 				this.debouncedRefresh();
 			})
 		);
@@ -273,6 +278,7 @@ export class VisualDashboardView extends ItemView {
 			this.app.vault.on('create', () => {
 				this.allFoldersDirty = true;
 				this.searchIndexDirty = true;
+				this.allTagsDirty = true;
 				this.folderCountCache.clear();
 				this.debouncedRefresh();
 			})
@@ -284,6 +290,7 @@ export class VisualDashboardView extends ItemView {
 				this.fileTagsCache.delete(file.path);
 				this.allFoldersDirty = true;
 				this.searchIndexDirty = true;
+				this.allTagsDirty = true;
 				this.folderCountCache.clear();
 				this.debouncedRefresh();
 			})
@@ -295,6 +302,7 @@ export class VisualDashboardView extends ItemView {
 				this.fileTagsCache.delete(oldPath);
 				this.allFoldersDirty = true;
 				this.searchIndexDirty = true;
+				this.allTagsDirty = true;
 				this.folderCountCache.clear();
 				this.debouncedRefresh();
 			})
@@ -428,9 +436,10 @@ export class VisualDashboardView extends ItemView {
 		const suggestions = getSearchSuggestions(query, this.allTags, this.allFolders, this.plugin.data.noteColors);
 		this.currentSuggestions = suggestions;
 		
+		const searchInput = this.contentEl.querySelector('.search-input');
 		if (suggestions.length > 0) {
 			suggestions.forEach((suggestion, index) => {
-				const suggestionEl = this.searchSuggestionsEl!.createDiv({ cls: 'search-suggestion-item' });
+				const suggestionEl = this.searchSuggestionsEl!.createDiv({ cls: 'search-suggestion-item', attr: { role: 'option', id: `suggestion-${index}` } });
 				suggestionEl.textContent = suggestion.display;
 				suggestionEl.addEventListener('mouseenter', () => {
 					this.selectedSuggestionIndex = index;
@@ -443,8 +452,13 @@ export class VisualDashboardView extends ItemView {
 				});
 			});
 			this.searchSuggestionsEl.addClass('show');
+			if (searchInput) searchInput.setAttribute('aria-expanded', 'true');
 		} else {
 			this.searchSuggestionsEl.removeClass('show');
+			if (searchInput) {
+				searchInput.setAttribute('aria-expanded', 'false');
+				searchInput.removeAttribute('aria-activedescendant');
+			}
 		}
 	}
 
@@ -456,6 +470,12 @@ export class VisualDashboardView extends ItemView {
 				el.removeClass('selected');
 			}
 		});
+		const searchInput = this.contentEl.querySelector('.search-input');
+		if (searchInput && this.selectedSuggestionIndex >= 0) {
+			searchInput.setAttribute('aria-activedescendant', `suggestion-${this.selectedSuggestionIndex}`);
+		} else if (searchInput) {
+			searchInput.removeAttribute('aria-activedescendant');
+		}
 	}
 
 	private applySuggestion(query: string, suggestion: { type: string; value: string; display: string }) {
@@ -557,6 +577,8 @@ export class VisualDashboardView extends ItemView {
 		this.drawerOpen = forceState ?? !this.drawerOpen;
 		this.drawerEl?.toggleClass('open', this.drawerOpen);
 		this.scrimEl?.toggleClass('open', this.drawerOpen);
+		const hamburger = this.contentEl.querySelector('.drawer-hamburger');
+		if (hamburger) hamburger.setAttribute('aria-expanded', String(this.drawerOpen));
 		if (this.drawerOpen) {
 			this.renderDrawerContents();
 		}
@@ -572,18 +594,22 @@ export class VisualDashboardView extends ItemView {
 		const drawerScroll = this.drawerEl.createDiv({ cls: 'drawer-scroll' });
 
 		// "All Notes" row — always first
-		const allNotesRow = drawerScroll.createDiv({ cls: 'drawer-folder-item' + (this.activeFilterFolder === null && this.navigatedFolder === null ? ' active' : '') });
+		const allNotesRow = drawerScroll.createDiv({ cls: 'drawer-folder-item' + (this.activeFilterFolder === null && this.navigatedFolder === null ? ' active' : ''), attr: { tabindex: '0', role: 'button' } });
 		const allNotesIcon = allNotesRow.createDiv({ cls: 'drawer-folder-icon' });
 		setIcon(allNotesIcon, 'home');
 		allNotesRow.createSpan({ cls: 'drawer-folder-name', text: 'All Notes' });
 		const totalNotes = this.app.vault.getMarkdownFiles().length;
 		allNotesRow.createSpan({ cls: 'drawer-folder-count', text: String(totalNotes) });
-		allNotesRow.addEventListener('click', () => {
+		const allNotesClickHandler = () => {
 			this.activeFilterFolder = null;
 			this.navigatedFolder = null;
 			this.updateBreadcrumb();
 			this.toggleDrawer(false);
 			void this.renderCards();
+		};
+		allNotesRow.addEventListener('click', allNotesClickHandler);
+		allNotesRow.addEventListener('keydown', (e: KeyboardEvent) => {
+			if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); allNotesClickHandler(); }
 		});
 
 		// Bookmarks section
@@ -597,7 +623,7 @@ export class VisualDashboardView extends ItemView {
 				if (!folder || !(folder instanceof TFolder)) continue;
 
 				const isActive = this.activeFilterFolder === folderPath || this.navigatedFolder === folderPath;
-				const row = drawerScroll.createDiv({ cls: 'drawer-folder-item' + (isActive ? ' active' : '') });
+				const row = drawerScroll.createDiv({ cls: 'drawer-folder-item' + (isActive ? ' active' : ''), attr: { tabindex: '0', role: 'button' } });
 
 				const iconEl = row.createDiv({ cls: 'drawer-folder-icon' });
 				setIcon(iconEl, 'folder');
@@ -624,13 +650,17 @@ export class VisualDashboardView extends ItemView {
 	}
 
 	private attachFolderRowEvents(row: HTMLElement, folderPath: string) {
-		// Tap = filter
-		row.addEventListener('click', () => {
+		// Tap/Enter/Space = filter
+		const filterHandler = () => {
 			this.activeFilterFolder = folderPath;
 			this.navigatedFolder = null;
 			this.updateBreadcrumb();
 			this.toggleDrawer(false);
 			void this.renderCards();
+		};
+		row.addEventListener('click', filterHandler);
+		row.addEventListener('keydown', (e: KeyboardEvent) => {
+			if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); filterHandler(); }
 		});
 
 		// Long-press = navigate
@@ -662,7 +692,7 @@ export class VisualDashboardView extends ItemView {
 			const hasChildren = subFolders.length > 0;
 			const isBookmarked = this.plugin.isBookmarked(child.path);
 
-			const row = container.createDiv({ cls: 'drawer-folder-item' });
+			const row = container.createDiv({ cls: 'drawer-folder-item', attr: { tabindex: '0', role: 'button' } });
 			if (depth > 0) row.setAttribute('data-depth', String(depth));
 
 			// Chevron
@@ -829,13 +859,17 @@ export class VisualDashboardView extends ItemView {
 		}
 		this.fileTagsCache = fileTagsMap;
 
-		// Build tag list from ALL vault files for complete autocomplete
-		const tagSet = new Set<string>();
-		for (const vaultFile of this.app.vault.getMarkdownFiles()) {
-			const cache = this.app.metadataCache.getFileCache(vaultFile);
-			if (cache?.tags) {
-				for (const t of cache.tags) tagSet.add(t.tag);
+		// Build tag list from ALL vault files for complete autocomplete (cached)
+		if (this.allTagsDirty) {
+			const tagSet = new Set<string>();
+			for (const vaultFile of this.app.vault.getMarkdownFiles()) {
+				const cache = this.app.metadataCache.getFileCache(vaultFile);
+				if (cache?.tags) {
+					for (const t of cache.tags) tagSet.add(t.tag);
+				}
 			}
+			this.allTags = Array.from(tagSet).sort();
+			this.allTagsDirty = false;
 		}
 
 		// Phase 2: Read file content — skip files whose mtime hasn't changed (persistent cache)
@@ -867,8 +901,6 @@ export class VisualDashboardView extends ItemView {
 		for (const file of files) {
 			fileContents.set(file.path, this.fileContentsCache.get(file.path) ?? '');
 		}
-
-		this.allTags = Array.from(tagSet).sort();
 
 		// Recompute folder list only when vault structure changed
 		if (this.allFoldersDirty) {
@@ -960,6 +992,12 @@ export class VisualDashboardView extends ItemView {
 
 		// Store the combined order for drag-and-drop
 		this.currentFiles = [...pinnedFiles, ...unpinnedFiles];
+
+		// Update screen reader live region
+		const liveRegion = this.contentEl.querySelector('.sr-results-live');
+		if (liveRegion) {
+			liveRegion.textContent = hasTextSearch ? (files.length === 0 ? 'No matching notes' : `${files.length} notes found`) : '';
+		}
 
 		if (files.length === 0) {
 			this.crossfadeGrid(() => {
@@ -1127,11 +1165,7 @@ export class VisualDashboardView extends ItemView {
 			card.style.backgroundColor = savedColor;
 		}
 
-		// Apply max height limit
-		card.style.maxHeight = `${MAX_CARD_HEIGHT}px`;
-		// Required to prevent card content from exceeding max height - dynamic styling needed per card
-		// eslint-disable-next-line obsidianmd/no-static-styles-assignment
-		card.style.overflow = 'hidden';
+		// maxHeight and overflow handled by .dashboard-card CSS
 
 		// Pin button (shows on hover)
 		const pinBtn = card.createEl('button', { cls: 'card-pin-btn' + (isPinned ? ' pinned' : ''), attr: { 'aria-label': isPinned ? 'Unpin note' : 'Pin note' } });

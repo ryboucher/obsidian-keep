@@ -32,6 +32,7 @@
 		"typescript-eslint": "8.35.1"
 	},
 	"dependencies": {
+		"minisearch": "^7.2.0",
 		"obsidian": "latest"
 	}
 }

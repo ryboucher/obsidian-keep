@@ -1,4 +1,5 @@
 import { TFile } from 'obsidian';
+import MiniSearch from 'minisearch';
 import { extractTags } from './markdown';
 
 export interface SearchState {
@@ -326,111 +327,93 @@ export function filterFiles(
 		});
 	}
 
-	// Apply search filter with operators + relevance scoring
+	// Apply search filter with operators + fuzzy relevance via MiniSearch
 	if (searchState.query) {
 		const cleanQuery = getCleanQuery(searchState.query);
 
-		const scored: Array<{ file: TFile; score: number }> = [];
+		// First pass: apply has:/type: operator filters
+		if (searchState.filterOperators.has('has') || searchState.filterOperators.has('type')) {
+			filtered = filtered.filter(f => {
+				const content = fileContents.get(f.path) || '';
+				const tags = extractTags(content);
 
-		for (const f of filtered) {
-			const content = fileContents.get(f.path) || '';
-			const tags = extractTags(content);
+				if (searchState.filterOperators.has('has')) {
+					const hasValue = searchState.filterOperators.get('has');
+					if (hasValue === 'tags' && tags.length === 0) return false;
+					if (hasValue === 'content' && content.trim().length === 0) return false;
+				}
 
-			// Check has: operators
-			if (searchState.filterOperators.has('has')) {
-				const hasValue = searchState.filterOperators.get('has');
-				if (hasValue === 'tags' && tags.length === 0) continue;
-				if (hasValue === 'content' && content.trim().length === 0) continue;
-			}
-
-			// Check type: operators
-			if (searchState.filterOperators.has('type')) {
-				const typeValue = searchState.filterOperators.get('type');
-
-				let typeMatch = true;
-				switch (typeValue) {
-					case 'empty':
-						if (content.trim().length > 0) typeMatch = false;
-						break;
-					case 'image':
-						if (!content.match(/!\[.*?\]\([^)]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^)]*\)|!\[\[[^\]]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^\]]*\]\]/i)) typeMatch = false;
-						break;
-					case 'pdf':
-						if (!content.match(/!?\[.*?\]\([^)]*\.pdf[^)]*\)|!?\[\[[^\]]*\.pdf[^\]]*\]\]/i)) typeMatch = false;
-						break;
-					case 'link': {
-						const linkPattern = new RegExp(
-							'(?<!!)\\[.*?\\]\\((?![^)]*\\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)\\b)[^)]+\\)|' +
-							'(?<!!)\\[\\[(?![^\\]]*\\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)\\b)[^\\]]+\\]\\]',
-							'i'
-						);
-						if (!content.match(linkPattern)) typeMatch = false;
-						break;
+				if (searchState.filterOperators.has('type')) {
+					const typeValue = searchState.filterOperators.get('type');
+					switch (typeValue) {
+						case 'empty':
+							if (content.trim().length > 0) return false;
+							break;
+						case 'image':
+							if (!content.match(/!\[.*?\]\([^)]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^)]*\)|!\[\[[^\]]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^\]]*\]\]/i)) return false;
+							break;
+						case 'pdf':
+							if (!content.match(/!?\[.*?\]\([^)]*\.pdf[^)]*\)|!?\[\[[^\]]*\.pdf[^\]]*\]\]/i)) return false;
+							break;
+						case 'link': {
+							const linkPattern = new RegExp(
+								'(?<!!)\\[.*?\\]\\((?![^)]*\\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)\\b)[^)]+\\)|' +
+								'(?<!!)\\[\\[(?![^\\]]*\\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)\\b)[^\\]]+\\]\\]',
+								'i'
+							);
+							if (!content.match(linkPattern)) return false;
+							break;
+						}
+						case 'list':
+							if (!content.match(/^\s*[-*+]\s|^\s*\d+\.\s/m)) return false;
+							break;
+						case 'code':
+							if (!content.match(/```[\s\S]*?```|`[^`|]+`/)) return false;
+							break;
+						case 'table':
+							if (!content.match(/\|[^\n]*\|\n\|[\s:|-]+\|/)) return false;
+							break;
 					}
-					case 'list':
-						if (!content.match(/^\s*[-*+]\s|^\s*\d+\.\s/m)) typeMatch = false;
-						break;
-					case 'code':
-						if (!content.match(/```[\s\S]*?```|`[^`|]+`/)) typeMatch = false;
-						break;
-					case 'table':
-						if (!content.match(/\|[^\n]*\|\n\|[\s:|-]+\|/)) typeMatch = false;
-						break;
-				}
-				if (!typeMatch) continue;
-			}
-
-			// Text search with relevance scoring
-			if (cleanQuery) {
-				const titleLower = f.basename.toLowerCase();
-				const contentLower = content.toLowerCase();
-				const inTitle = titleLower.includes(cleanQuery);
-				const inContent = contentLower.includes(cleanQuery);
-
-				if (!inTitle && !inContent) continue;
-
-				let score = 0;
-
-				// Title matches (high value)
-				if (titleLower === cleanQuery) {
-					score += 100; // Exact title match
-				} else if (titleLower.startsWith(cleanQuery)) {
-					score += 80; // Title starts with query
-				} else if (inTitle) {
-					score += 50; // Title contains query
 				}
 
-				// Tag matches
-				const tagMatch = tags.some(t => t.toLowerCase().includes(cleanQuery));
-				if (tagMatch) {
-					score += 30;
-				}
-
-				// Content matches — count occurrences, cap contribution
-				if (inContent) {
-					const occurrences = contentLower.split(cleanQuery).length - 1;
-					score += Math.min(occurrences * 3, 20); // Up to 20 pts for body matches
-				}
-
-				// Recency bonus — more recent files get slight boost
-				const ageHours = (Date.now() - f.stat.mtime) / 3600000;
-				if (ageHours < 24) score += 10;
-				else if (ageHours < 168) score += 5; // Within a week
-
-				scored.push({ file: f, score });
-			} else {
-				// No text query — operator-only search, keep original order
-				scored.push({ file: f, score: 0 });
-			}
+				return true;
+			});
 		}
 
-		// Sort by relevance score (highest first), then by mtime for ties
-		scored.sort((a, b) => {
-			if (b.score !== a.score) return b.score - a.score;
-			return b.file.stat.mtime - a.file.stat.mtime;
-		});
+		// Second pass: fuzzy text search via MiniSearch
+		if (cleanQuery) {
+			const miniSearch = new MiniSearch<{ id: string; title: string; tags: string; body: string }>({
+				fields: ['title', 'tags', 'body'],
+				storeFields: ['id'],
+				searchOptions: {
+					boost: { title: 5, tags: 2, body: 1 },
+					fuzzy: 0.2,
+					prefix: true,
+				},
+			});
 
-		filtered = scored.map(s => s.file);
+			// Build index from filtered files — body truncated to 500 chars for speed
+			const docs = filtered.map(f => {
+				const content = fileContents.get(f.path) || '';
+				const tags = extractTags(content);
+				return {
+					id: f.path,
+					title: f.basename,
+					tags: tags.join(' '),
+					body: content.substring(0, 500),
+				};
+			});
+			miniSearch.addAll(docs);
+
+			const results = miniSearch.search(cleanQuery);
+			const resultPaths = new Set(results.map(r => r.id));
+			const resultOrder = new Map(results.map((r, i) => [r.id, i]));
+
+			// Keep only matched files, sorted by MiniSearch relevance
+			filtered = filtered
+				.filter(f => resultPaths.has(f.path))
+				.sort((a, b) => (resultOrder.get(a.path) ?? 0) - (resultOrder.get(b.path) ?? 0));
+		}
 	}
 
 	return filtered;

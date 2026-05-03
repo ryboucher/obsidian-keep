@@ -42,6 +42,7 @@ export class VisualDashboardView extends ItemView {
 	// Progressive rendering state
 	private pendingRichRenders: number[] = [];
 	private fileContentsCache: Map<string, string> = new Map();
+	private fileMtimeCache: Map<string, number> = new Map();
 	private fileTagsCache: Map<string, string[]> = new Map();
 	private cardObserver: IntersectionObserver | null = null;
 
@@ -250,18 +251,29 @@ export class VisualDashboardView extends ItemView {
 			this.app.workspace.on('mini-notes:settings-changed', this.settingsChangedHandler)
 		);
 
-		// Listen for file changes to auto-refresh
+		// Listen for file changes — invalidate cache + debounced refresh
 		this.registerEvent(
-			this.app.vault.on('modify', () => this.debouncedRefresh())
+			this.app.vault.on('modify', (file) => {
+				this.fileMtimeCache.delete(file.path);
+				this.debouncedRefresh();
+			})
 		);
 		this.registerEvent(
 			this.app.vault.on('create', () => this.debouncedRefresh())
 		);
 		this.registerEvent(
-			this.app.vault.on('delete', () => this.debouncedRefresh())
+			this.app.vault.on('delete', (file) => {
+				this.fileMtimeCache.delete(file.path);
+				this.fileContentsCache.delete(file.path);
+				this.debouncedRefresh();
+			})
 		);
 		this.registerEvent(
-			this.app.vault.on('rename', () => this.debouncedRefresh())
+			this.app.vault.on('rename', (file, oldPath) => {
+				this.fileMtimeCache.delete(oldPath);
+				this.fileContentsCache.delete(oldPath);
+				this.debouncedRefresh();
+			})
 		);
 
 		// Handle Ctrl+Z / Cmd+Z for undoing deletions
@@ -728,44 +740,58 @@ export class VisualDashboardView extends ItemView {
 		// Filter out config folder files to avoid reading plugin/config files
 		files = files.filter((file: TFile) => !file.path.startsWith(this.app.vault.configDir + '/'));
 		
+		// When text search is active, fetch more files to filter from.
+		// Otherwise, fetch only what we'll display — much faster.
+		const hasTextSearch = this.filterSearch && isSimpleTextSearch(this.filterSearch);
+		const fetchLimit = hasTextSearch
+			? this.plugin.data.maxNotes * FILE_FETCH_MULTIPLIER
+			: this.plugin.data.maxNotes;
+
 		files = files
 			.sort((a: TFile, b: TFile) => b.stat.mtime - a.stat.mtime)
-			.slice(0, this.plugin.data.maxNotes * FILE_FETCH_MULTIPLIER); // Get more initially for filtering
+			.slice(0, fetchLimit);
 
 		// Phase 1: Extract tags from metadataCache (zero disk I/O)
-		const fileContents = new Map<string, string>();
 		const fileTagsMap = new Map<string, string[]>();
 		const tagSet = new Set<string>();
 		for (const file of files) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			const tags = (cache?.tags?.map(t => t.tag) ?? []);
-			// Deduplicate per-file
 			const uniqueTags = [...new Set(tags)];
 			fileTagsMap.set(file.path, uniqueTags);
 			uniqueTags.forEach(tag => tagSet.add(tag));
 		}
 		this.fileTagsCache = fileTagsMap;
 
-		// Phase 2: Read file content — batched, smaller batches on mobile
-		const BATCH_SIZE = Platform.isMobile ? 10 : 30;
-		for (let i = 0; i < files.length; i += BATCH_SIZE) {
-			const batch = files.slice(i, i + BATCH_SIZE);
+		// Phase 2: Read file content — skip files whose mtime hasn't changed (persistent cache)
+		const filesToRead = files.filter(file => {
+			const cachedMtime = this.fileMtimeCache.get(file.path);
+			return cachedMtime === undefined || cachedMtime !== file.stat.mtime;
+		});
+
+		if (filesToRead.length > 0) {
+			// Read all stale/new files in one parallel burst — cachedRead is memory-backed
 			const results = await Promise.all(
-				batch.map(async (file) => {
+				filesToRead.map(async (file) => {
 					try {
-						return { path: file.path, content: await this.app.vault.cachedRead(file) };
+						return { path: file.path, mtime: file.stat.mtime, content: await this.app.vault.cachedRead(file) };
 					} catch (error) {
 						console.warn(`Failed to read file ${file.path}:`, error);
-						return { path: file.path, content: '' };
+						return { path: file.path, mtime: file.stat.mtime, content: '' };
 					}
 				})
 			);
-			for (const { path, content } of results) {
-				fileContents.set(path, content);
+			for (const { path, mtime, content } of results) {
+				this.fileContentsCache.set(path, content);
+				this.fileMtimeCache.set(path, mtime);
 			}
 		}
-		// Cache for createCard to avoid double reads
-		this.fileContentsCache = fileContents;
+
+		// Build the content map for this render from the persistent cache
+		const fileContents = new Map<string, string>();
+		for (const file of files) {
+			fileContents.set(file.path, this.fileContentsCache.get(file.path) ?? '');
+		}
 
 		this.allTags = Array.from(tagSet).sort();
 
@@ -1321,6 +1347,7 @@ async onClose() {
 		}
 		this.pendingRichRenders = [];
 		this.fileContentsCache.clear();
+		this.fileMtimeCache.clear();
 		this.fileTagsCache.clear();
 		if (this.cardObserver) {
 			this.cardObserver.disconnect();

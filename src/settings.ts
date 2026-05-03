@@ -137,6 +137,21 @@ export class MiniNotesSettingTab extends PluginSettingTab {
 		customColorSetting.settingEl.addClass('custom-color-setting');
 		customColorSetting.settingEl.style.display = this.plugin.data.themeColor === 'custom' ? 'flex' : 'none';
 
+		new Setting(containerEl)
+			.setName('Mobile columns')
+			.setDesc('Number of card columns on small screens')
+			.addDropdown(dropdown => {
+				dropdown.addOption('1', '1 column');
+				dropdown.addOption('2', '2 columns');
+				dropdown.addOption('3', '3 columns');
+				dropdown.setValue(String(this.plugin.data.mobileColumns));
+				dropdown.onChange(async (value) => {
+					this.plugin.data.mobileColumns = parseInt(value) as 1 | 2 | 3;
+					await this.plugin.savePluginData();
+					this.app.workspace.trigger('mini-notes:settings-changed');
+				});
+			});
+
 		// Footer with GitHub link
 		const footer = containerEl.createDiv();
 		// Required for proper footer spacing and layout - CSS classes not available for settings footer

@@ -425,7 +425,7 @@
     color: var(--text-muted);
     background: var(--background-modifier-form-field);
     border-radius: 6px;
-    transition: all 0.2s ease;
+    transition: color 0.2s ease, background 0.2s ease;
 }
 
 .create-note-btn:hover {
@@ -453,7 +453,7 @@
     padding: 0 8px;
     height: 36px;
     box-sizing: border-box;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     flex: 1;
     max-width: 340px;
 }
@@ -502,12 +502,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
+    width: 36px;
+    height: 36px;
     cursor: pointer;
     color: var(--text-muted);
-    transition: color 0.2s;
+    transition: color 0.2s ease;
     margin-left: 4px;
+    margin-right: -8px;
 }
 
 .search-clear-btn:hover {
@@ -822,7 +823,7 @@
 
 @container (min-width: 300px) and (max-width: 499px) {
     .mini-notes-grid-section {
-        column-count: 1;
+        column-count: var(--mobile-columns, 1);
     }
 }
 
@@ -1178,15 +1179,7 @@
     height: 14px;
 }
 
-/* Apply line clamp only to paragraphs and text elements, not code blocks */
-.card-preview > p,
-.card-preview > div:not(:has(pre)) {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 6;
-    line-clamp: 6;
-    overflow: hidden;
-}
+/* max-height + mask-image on .card-preview handles clipping — no per-element clamp needed */
 
 /* PDF embeds and internal embeds - maintain aspect ratio with scrollbar on overflow */
 .card-preview .internal-embed {

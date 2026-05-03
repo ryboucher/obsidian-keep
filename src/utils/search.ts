@@ -279,7 +279,8 @@ export function filterFiles(
 	fileContents: Map<string, string>,
 	searchState: SearchState,
 	isPinned: (path: string) => boolean,
-	getNoteColor: (path: string) => string | undefined
+	getNoteColor: (path: string) => string | undefined,
+	searchIndex?: MiniSearch<{ id: string; title: string; tags: string; body: string }>
 ): FilterResult {
 	let filtered = [...files];
 	const scores = new Map<string, SearchScore>();
@@ -394,28 +395,31 @@ export function filterFiles(
 
 		// Second pass: fuzzy text search via MiniSearch
 		if (cleanQuery) {
-			const miniSearch = new MiniSearch<{ id: string; title: string; tags: string; body: string }>({
-				fields: ['title', 'tags', 'body'],
-				storeFields: ['id'],
-				searchOptions: {
-					boost: { title: 5, tags: 2, body: 1 },
-					fuzzy: 0.2,
-					prefix: true,
-				},
-			});
-
-			// Build index from filtered files — body truncated to 500 chars for speed
-			const docs = filtered.map(f => {
-				const content = fileContents.get(f.path) || '';
-				const tags = extractTags(content);
-				return {
-					id: f.path,
-					title: f.basename,
-					tags: tags.join(' '),
-					body: content.substring(0, 500),
-				};
-			});
-			miniSearch.addAll(docs);
+			let miniSearch: MiniSearch<{ id: string; title: string; tags: string; body: string }>;
+			if (searchIndex) {
+				miniSearch = searchIndex;
+			} else {
+				miniSearch = new MiniSearch<{ id: string; title: string; tags: string; body: string }>({
+					fields: ['title', 'tags', 'body'],
+					storeFields: ['id'],
+					searchOptions: {
+						boost: { title: 5, tags: 2, body: 1 },
+						fuzzy: 0.2,
+						prefix: true,
+					},
+				});
+				const docs = filtered.map(f => {
+					const content = fileContents.get(f.path) || '';
+					const tags = extractTags(content);
+					return {
+						id: f.path,
+						title: f.basename,
+						tags: tags.join(' '),
+						body: content.substring(0, 500),
+					};
+				});
+				miniSearch.addAll(docs);
+			}
 
 			const results = miniSearch.search(cleanQuery);
 			const resultPaths = new Set(results.map(r => r.id));

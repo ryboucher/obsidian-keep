@@ -14,6 +14,7 @@ export interface DashboardData {
 	customThemeColor: string;
 	bookmarkedFolders: string[];
 	showColorButton: boolean;
+	mobileColumns: 1 | 2 | 3;
 }
 
 export const DEFAULT_DATA: DashboardData = {
@@ -27,5 +28,6 @@ export const DEFAULT_DATA: DashboardData = {
 	themeColor: 'obsidian',
 	customThemeColor: '#000000',
 	bookmarkedFolders: [],
-	showColorButton: true
+	showColorButton: true,
+	mobileColumns: 1
 };

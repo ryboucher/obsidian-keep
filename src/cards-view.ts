@@ -3,6 +3,7 @@ import type VisualDashboardPlugin from './main';
 import { VIEW_TYPE_VISUAL_DASHBOARD } from './utils/types';
 import { extractTags, getPreviewText, stripMarkdown } from './utils/markdown';
 import { formatDate } from './utils/date';
+import MiniSearch from 'minisearch';
 import { parseSearchOperators, getSearchSuggestions, filterFiles, isSimpleTextSearch, highlightSearchTerms, getCleanQuery, type SearchState, type SearchScore } from './utils/search';
 import { DEBOUNCE_REFRESH_MS, DEBOUNCE_SEARCH_MS, MAX_PREVIEW_LENGTH, CARD_SIZE, MAX_CARD_HEIGHT } from './utils/constants';
 
@@ -42,11 +43,16 @@ export class VisualDashboardView extends ItemView {
 
 	// Progressive rendering state
 	private pendingRichRenders: number[] = [];
+	private pendingRafId: number | null = null;
+	private crossfadeTimerId: number | null = null;
 	private fileContentsCache: Map<string, string> = new Map();
 	private fileMtimeCache: Map<string, number> = new Map();
 	private fileTagsCache: Map<string, string[]> = new Map();
 	private cardObserver: IntersectionObserver | null = null;
 	private allFoldersDirty = true;
+	private folderCountCache: Map<string, number> = new Map();
+	private searchIndexDirty = true;
+	private cachedSearchIndex: import('minisearch').default<{ id: string; title: string; tags: string; body: string }> | null = null;
 
 	// Drawer state
 	private drawerEl: HTMLElement | null = null;
@@ -79,6 +85,7 @@ export class VisualDashboardView extends ItemView {
 		const container = this.contentEl;
 		container.empty();
 		container.addClass('visual-dashboard-container');
+		container.style.setProperty('--mobile-columns', String(this.plugin.data.mobileColumns));
 
 		// Apply theme color
 		this.applyThemeColor();
@@ -258,12 +265,15 @@ export class VisualDashboardView extends ItemView {
 			this.app.vault.on('modify', (file) => {
 				this.fileMtimeCache.delete(file.path);
 				this.fileContentsCache.delete(file.path);
+				this.searchIndexDirty = true;
 				this.debouncedRefresh();
 			})
 		);
 		this.registerEvent(
 			this.app.vault.on('create', () => {
 				this.allFoldersDirty = true;
+				this.searchIndexDirty = true;
+				this.folderCountCache.clear();
 				this.debouncedRefresh();
 			})
 		);
@@ -271,7 +281,10 @@ export class VisualDashboardView extends ItemView {
 			this.app.vault.on('delete', (file) => {
 				this.fileMtimeCache.delete(file.path);
 				this.fileContentsCache.delete(file.path);
+				this.fileTagsCache.delete(file.path);
 				this.allFoldersDirty = true;
+				this.searchIndexDirty = true;
+				this.folderCountCache.clear();
 				this.debouncedRefresh();
 			})
 		);
@@ -279,7 +292,10 @@ export class VisualDashboardView extends ItemView {
 			this.app.vault.on('rename', (file, oldPath) => {
 				this.fileMtimeCache.delete(oldPath);
 				this.fileContentsCache.delete(oldPath);
+				this.fileTagsCache.delete(oldPath);
 				this.allFoldersDirty = true;
+				this.searchIndexDirty = true;
+				this.folderCountCache.clear();
 				this.debouncedRefresh();
 			})
 		);
@@ -311,7 +327,8 @@ export class VisualDashboardView extends ItemView {
 	private async refreshView() {
 		// Update theme color
 		this.applyThemeColor();
-		
+		this.contentEl.style.setProperty('--mobile-columns', String(this.plugin.data.mobileColumns));
+
 		// Update view title
 		const titleElement = this.contentEl.querySelector('.dashboard-title') as HTMLElement;
 		if (titleElement) {
@@ -325,6 +342,14 @@ export class VisualDashboardView extends ItemView {
 	private crossfadeGrid(applyFn: () => void, instant = false) {
 		const grid = this.miniNotesGrid;
 
+		// Cancel any pending crossfade from a prior render
+		if (this.crossfadeTimerId !== null) {
+			window.clearTimeout(this.crossfadeTimerId);
+			this.crossfadeTimerId = null;
+			grid.removeClass('grid-fading-out');
+			grid.removeClass('grid-fading-in');
+		}
+
 		// Fast path: empty grid (initial load) or instant mode (search) — no animation
 		if (grid.childElementCount === 0 || instant) {
 			applyFn();
@@ -335,7 +360,8 @@ export class VisualDashboardView extends ItemView {
 		grid.addClass('grid-fading-out');
 
 		// Phase 2: after fade-out completes, swap content while invisible, then fade in
-		setTimeout(() => {
+		this.crossfadeTimerId = window.setTimeout(() => {
+			this.crossfadeTimerId = null;
 			// Set instant-zero so content swap is invisible
 			grid.removeClass('grid-fading-out');
 			grid.addClass('grid-fading-in');
@@ -354,6 +380,11 @@ export class VisualDashboardView extends ItemView {
 	private debouncedRefresh() {
 		if (this.refreshTimeoutId !== null) {
 			window.clearTimeout(this.refreshTimeoutId);
+		}
+		// Cancel pending search render — vault event takes priority
+		if (this.searchTimeoutId !== null) {
+			window.clearTimeout(this.searchTimeoutId);
+			this.searchTimeoutId = null;
 		}
 
 		this.refreshTimeoutId = window.setTimeout(() => {
@@ -677,9 +708,13 @@ export class VisualDashboardView extends ItemView {
 	}
 
 	private countNotesInFolder(folderPath: string): number {
-		return this.app.vault.getMarkdownFiles()
+		const cached = this.folderCountCache.get(folderPath);
+		if (cached !== undefined) return cached;
+		const count = this.app.vault.getMarkdownFiles()
 			.filter(f => f.path.startsWith(folderPath + '/'))
 			.length;
+		this.folderCountCache.set(folderPath, count);
+		return count;
 	}
 
 	private updateBreadcrumb() {
@@ -786,15 +821,22 @@ export class VisualDashboardView extends ItemView {
 
 		// Phase 1: Extract tags from metadataCache (zero disk I/O)
 		const fileTagsMap = new Map<string, string[]>();
-		const tagSet = new Set<string>();
 		for (const file of files) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			const tags = (cache?.tags?.map(t => t.tag) ?? []);
 			const uniqueTags = [...new Set(tags)];
 			fileTagsMap.set(file.path, uniqueTags);
-			uniqueTags.forEach(tag => tagSet.add(tag));
 		}
 		this.fileTagsCache = fileTagsMap;
+
+		// Build tag list from ALL vault files for complete autocomplete
+		const tagSet = new Set<string>();
+		for (const vaultFile of this.app.vault.getMarkdownFiles()) {
+			const cache = this.app.metadataCache.getFileCache(vaultFile);
+			if (cache?.tags) {
+				for (const t of cache.tags) tagSet.add(t.tag);
+			}
+		}
 
 		// Phase 2: Read file content — skip files whose mtime hasn't changed (persistent cache)
 		const filesToRead = files.filter(file => {
@@ -851,12 +893,37 @@ export class VisualDashboardView extends ItemView {
 			filterOperators: this.filterOperators
 		};
 		
+		// Build/rebuild search index when files or content changed (avoids per-keystroke rebuild)
+		if (hasTextSearch && (this.searchIndexDirty || this.cachedSearchIndex === null)) {
+			this.cachedSearchIndex = new MiniSearch<{ id: string; title: string; tags: string; body: string }>({
+				fields: ['title', 'tags', 'body'],
+				storeFields: ['id'],
+				searchOptions: {
+					boost: { title: 5, tags: 2, body: 1 },
+					fuzzy: 0.2,
+					prefix: true,
+				},
+			});
+			const docs = files.map(f => {
+				const content = fileContents.get(f.path) || '';
+				return {
+					id: f.path,
+					title: f.basename,
+					tags: extractTags(content).join(' '),
+					body: content.substring(0, 500),
+				};
+			});
+			this.cachedSearchIndex.addAll(docs);
+			this.searchIndexDirty = false;
+		}
+
 		const filterResult = filterFiles(
 			files,
 			fileContents,
 			searchState,
 			(path) => this.plugin.isPinned(path),
-			(path) => this.plugin.data.noteColors[path]
+			(path) => this.plugin.data.noteColors[path],
+			hasTextSearch ? this.cachedSearchIndex ?? undefined : undefined
 		);
 		files = filterResult.files;
 		const searchScores = filterResult.scores;
@@ -902,6 +969,12 @@ export class VisualDashboardView extends ItemView {
 				emptyState.createEl('p', { text: 'Try adjusting your filters' });
 			}, hasTextSearch);
 			return;
+		}
+
+		// Cancel pending progressive render chunks from previous cycle
+		if (this.pendingRafId !== null) {
+			cancelAnimationFrame(this.pendingRafId);
+			this.pendingRafId = null;
 		}
 
 		// Cancel any pending rich renders from previous render cycle
@@ -963,10 +1036,12 @@ export class VisualDashboardView extends ItemView {
 				}
 				cursor = end;
 				if (cursor < allOrdered.length) {
-					requestAnimationFrame(renderChunk);
+					this.pendingRafId = requestAnimationFrame(renderChunk);
+				} else {
+					this.pendingRafId = null;
 				}
 			};
-			requestAnimationFrame(renderChunk);
+			this.pendingRafId = requestAnimationFrame(renderChunk);
 		}
 		} catch (error) {
 			console.error('Error rendering cards:', error);
@@ -1230,6 +1305,7 @@ export class VisualDashboardView extends ItemView {
 				try {
 					const contentToSave = await this.app.vault.read(file);
 					this.deletedNotesStack.push({ path: file.path, content: contentToSave });
+					if (this.deletedNotesStack.length > 20) this.deletedNotesStack.shift();
 				} catch (err) {
 					console.error('Could not save note content for undo', err);
 				}
@@ -1425,6 +1501,25 @@ export class VisualDashboardView extends ItemView {
 	}
 
 async onClose() {
+		// Cancel pending progressive render chunks
+		if (this.pendingRafId !== null) {
+			cancelAnimationFrame(this.pendingRafId);
+			this.pendingRafId = null;
+		}
+		// Cancel pending crossfade
+		if (this.crossfadeTimerId !== null) {
+			window.clearTimeout(this.crossfadeTimerId);
+			this.crossfadeTimerId = null;
+		}
+		// Cancel pending debounced renders
+		if (this.refreshTimeoutId !== null) {
+			window.clearTimeout(this.refreshTimeoutId);
+			this.refreshTimeoutId = null;
+		}
+		if (this.searchTimeoutId !== null) {
+			window.clearTimeout(this.searchTimeoutId);
+			this.searchTimeoutId = null;
+		}
 		// Cancel pending rich renders
 		for (const id of this.pendingRichRenders) {
 			cancelIdleCallback(id);
@@ -1433,6 +1528,8 @@ async onClose() {
 		this.fileContentsCache.clear();
 		this.fileMtimeCache.clear();
 		this.fileTagsCache.clear();
+		this.folderCountCache.clear();
+		this.cachedSearchIndex = null;
 		if (this.cardObserver) {
 			this.cardObserver.disconnect();
 			this.cardObserver = null;

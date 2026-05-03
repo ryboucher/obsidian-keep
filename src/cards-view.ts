@@ -1170,8 +1170,14 @@ export class VisualDashboardView extends ItemView {
 		card.addEventListener('click', (e: MouseEvent) => {
 			// Don't open if clicking interactive elements or during drag
 			if ((e.target as HTMLElement).closest('.card-pin-btn, .card-color-btn, .card-color-dropdown')) return;
-			const leaf = this.app.workspace.getLeaf('tab');
-			void leaf.openFile(file);
+			// Mobile: open in same leaf so Android back returns to dashboard
+			// Desktop: open in new tab (expected behavior)
+			if (Platform.isMobile) {
+				void this.leaf.openFile(file);
+			} else {
+				const leaf = this.app.workspace.getLeaf('tab');
+				void leaf.openFile(file);
+			}
 		});
 
 		// Keyboard handler — Enter/Space opens the note
@@ -1179,8 +1185,12 @@ export class VisualDashboardView extends ItemView {
 			if (e.key === 'Enter' || e.key === ' ') {
 				if ((e.target as HTMLElement).closest('button')) return;
 				e.preventDefault();
-				const leaf = this.app.workspace.getLeaf('tab');
-				void leaf.openFile(file);
+				if (Platform.isMobile) {
+					void this.leaf.openFile(file);
+				} else {
+					const leaf = this.app.workspace.getLeaf('tab');
+					void leaf.openFile(file);
+				}
 			}
 		});
 

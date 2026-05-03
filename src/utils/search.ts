@@ -326,71 +326,111 @@ export function filterFiles(
 		});
 	}
 
-	// Apply search filter with operators
+	// Apply search filter with operators + relevance scoring
 	if (searchState.query) {
 		const cleanQuery = getCleanQuery(searchState.query);
 
-		filtered = filtered.filter(f => {
+		const scored: Array<{ file: TFile; score: number }> = [];
+
+		for (const f of filtered) {
 			const content = fileContents.get(f.path) || '';
 			const tags = extractTags(content);
-
-			// Check text search
-			let matchesText = true;
-			if (cleanQuery) {
-				matchesText = f.basename.toLowerCase().includes(cleanQuery) ||
-					content.toLowerCase().includes(cleanQuery);
-			}
 
 			// Check has: operators
 			if (searchState.filterOperators.has('has')) {
 				const hasValue = searchState.filterOperators.get('has');
-				if (hasValue === 'tags' && tags.length === 0) return false;
-				if (hasValue === 'content' && content.trim().length === 0) return false;
+				if (hasValue === 'tags' && tags.length === 0) continue;
+				if (hasValue === 'content' && content.trim().length === 0) continue;
 			}
 
 			// Check type: operators
 			if (searchState.filterOperators.has('type')) {
 				const typeValue = searchState.filterOperators.get('type');
-				const trimmedContent = content.trim();
 
+				let typeMatch = true;
 				switch (typeValue) {
 					case 'empty':
-						if (trimmedContent.length > 0) return false;
+						if (content.trim().length > 0) typeMatch = false;
 						break;
 					case 'image':
-						// Match markdown images with image extensions
-						// Supports: ![](image.jpg), ![[image.png]], and common image formats
-						if (!content.match(/!\[.*?\]\([^)]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^)]*\)|!\[\[[^\]]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^\]]*\]\]/i)) return false;
+						if (!content.match(/!\[.*?\]\([^)]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^)]*\)|!\[\[[^\]]*\.(png|jpg|jpeg|gif|bmp|svg|webp)[^\]]*\]\]/i)) typeMatch = false;
 						break;
 					case 'pdf':
-						// Match markdown embeds with PDF extensions
-						// Supports: ![](document.pdf), ![[document.pdf]], [](document.pdf), [[document.pdf]]
-						if (!content.match(/!?\[.*?\]\([^)]*\.pdf[^)]*\)|!?\[\[[^\]]*\.pdf[^\]]*\]\]/i)) return false;
+						if (!content.match(/!?\[.*?\]\([^)]*\.pdf[^)]*\)|!?\[\[[^\]]*\.pdf[^\]]*\]\]/i)) typeMatch = false;
 						break;
-					case 'link':
-						// Match links to pages, excluding images and PDFs
-						// Excludes: links with ! prefix (embeds) and links to image/PDF files
+					case 'link': {
 						const linkPattern = new RegExp(
 							'(?<!!)\\[.*?\\]\\((?![^)]*\\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)\\b)[^)]+\\)|' +
 							'(?<!!)\\[\\[(?![^\\]]*\\.(png|jpg|jpeg|gif|bmp|svg|webp|pdf)\\b)[^\\]]+\\]\\]',
 							'i'
 						);
-						if (!content.match(linkPattern)) return false;
+						if (!content.match(linkPattern)) typeMatch = false;
 						break;
+					}
 					case 'list':
-						if (!content.match(/^\s*[-*+]\s|^\s*\d+\.\s/m)) return false;
+						if (!content.match(/^\s*[-*+]\s|^\s*\d+\.\s/m)) typeMatch = false;
 						break;
 					case 'code':
-						if (!content.match(/```[\s\S]*?```|`[^`|]+`/)) return false;
+						if (!content.match(/```[\s\S]*?```|`[^`|]+`/)) typeMatch = false;
 						break;
 					case 'table':
-						if (!content.match(/\|[^\n]*\|\n\|[\s:|-]+\|/)) return false;
+						if (!content.match(/\|[^\n]*\|\n\|[\s:|-]+\|/)) typeMatch = false;
 						break;
 				}
+				if (!typeMatch) continue;
 			}
 
-			return matchesText;
+			// Text search with relevance scoring
+			if (cleanQuery) {
+				const titleLower = f.basename.toLowerCase();
+				const contentLower = content.toLowerCase();
+				const inTitle = titleLower.includes(cleanQuery);
+				const inContent = contentLower.includes(cleanQuery);
+
+				if (!inTitle && !inContent) continue;
+
+				let score = 0;
+
+				// Title matches (high value)
+				if (titleLower === cleanQuery) {
+					score += 100; // Exact title match
+				} else if (titleLower.startsWith(cleanQuery)) {
+					score += 80; // Title starts with query
+				} else if (inTitle) {
+					score += 50; // Title contains query
+				}
+
+				// Tag matches
+				const tagMatch = tags.some(t => t.toLowerCase().includes(cleanQuery));
+				if (tagMatch) {
+					score += 30;
+				}
+
+				// Content matches — count occurrences, cap contribution
+				if (inContent) {
+					const occurrences = contentLower.split(cleanQuery).length - 1;
+					score += Math.min(occurrences * 3, 20); // Up to 20 pts for body matches
+				}
+
+				// Recency bonus — more recent files get slight boost
+				const ageHours = (Date.now() - f.stat.mtime) / 3600000;
+				if (ageHours < 24) score += 10;
+				else if (ageHours < 168) score += 5; // Within a week
+
+				scored.push({ file: f, score });
+			} else {
+				// No text query — operator-only search, keep original order
+				scored.push({ file: f, score: 0 });
+			}
+		}
+
+		// Sort by relevance score (highest first), then by mtime for ties
+		scored.sort((a, b) => {
+			if (b.score !== a.score) return b.score - a.score;
+			return b.file.stat.mtime - a.file.stat.mtime;
 		});
+
+		filtered = scored.map(s => s.file);
 	}
 
 	return filtered;

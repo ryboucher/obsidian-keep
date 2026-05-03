@@ -1035,9 +1035,7 @@
     font-weight: 500;
     color: var(--text-normal);
     line-height: 1.35;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: break-word;
 }
 
 /* Text on colored cards in dark theme — use Obsidian tokens, not hardcoded */

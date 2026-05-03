@@ -263,14 +263,26 @@ export function highlightSearchTerms(element: HTMLElement, searchTerm: string): 
 	});
 }
 
+export interface SearchScore {
+	score: number;
+	matchedFields: string[];
+	terms: string[];
+}
+
+export interface FilterResult {
+	files: TFile[];
+	scores: Map<string, SearchScore>;
+}
+
 export function filterFiles(
 	files: TFile[],
 	fileContents: Map<string, string>,
 	searchState: SearchState,
 	isPinned: (path: string) => boolean,
 	getNoteColor: (path: string) => string | undefined
-): TFile[] {
+): FilterResult {
 	let filtered = [...files];
+	const scores = new Map<string, SearchScore>();
 
 	// Apply pinned filter
 	if (searchState.filterPinned === 'pinned') {
@@ -409,6 +421,16 @@ export function filterFiles(
 			const resultPaths = new Set(results.map(r => r.id));
 			const resultOrder = new Map(results.map((r, i) => [r.id, i]));
 
+			// Build score map with field-level match info
+			for (const r of results) {
+				const matchedFields = Object.keys(r.match);
+				scores.set(r.id as string, {
+					score: Math.round(r.score * 100) / 100,
+					matchedFields,
+					terms: r.terms,
+				});
+			}
+
 			// Keep only matched files, sorted by MiniSearch relevance
 			filtered = filtered
 				.filter(f => resultPaths.has(f.path))
@@ -416,5 +438,5 @@ export function filterFiles(
 		}
 	}
 
-	return filtered;
+	return { files: filtered, scores };
 }

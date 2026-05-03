@@ -450,7 +450,9 @@
     background: var(--background-modifier-form-field);
     border: 1px solid transparent;
     border-radius: 6px;
-    padding: 4px 8px;
+    padding: 0 8px;
+    height: 36px;
+    box-sizing: border-box;
     transition: all 0.2s ease;
     flex: 1;
     max-width: 340px;
@@ -820,7 +822,7 @@
 
 @container (min-width: 300px) and (max-width: 499px) {
     .mini-notes-grid-section {
-        column-count: 2;
+        column-count: 1;
     }
 }
 
@@ -1031,7 +1033,7 @@
 
 .card-title {
     margin: 0;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--text-normal);
     line-height: 1.35;
@@ -1077,10 +1079,13 @@
 
 .card-preview {
     margin: 0;
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1.45;
     color: var(--text-muted);
     overflow: hidden;
+    max-height: calc(6 * 14px * 1.45);
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1.4em), transparent 100%);
+    mask-image: linear-gradient(to bottom, black calc(100% - 1.4em), transparent 100%);
 }
 
 /* Code blocks and inline code in preview */
@@ -1178,8 +1183,8 @@
 .card-preview > div:not(:has(pre)) {
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 15;
-    line-clamp: 15;
+    -webkit-line-clamp: 6;
+    line-clamp: 6;
     overflow: hidden;
 }
 
@@ -1235,6 +1240,18 @@
 /* ============================================
    Card Footer - Tags left, Date right
    ============================================ */
+
+/* Search score badge — visible only during active search */
+.card-search-score {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: var(--background-modifier-hover);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin: 4px 8px 0;
+    font-family: var(--font-monospace);
+    opacity: 0.8;
+}
 
 .card-footer {
     display: flex;

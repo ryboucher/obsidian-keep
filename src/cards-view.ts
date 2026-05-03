@@ -3,7 +3,7 @@ import type VisualDashboardPlugin from './main';
 import { VIEW_TYPE_VISUAL_DASHBOARD } from './utils/types';
 import { extractTags, getPreviewText, stripMarkdown } from './utils/markdown';
 import { formatDate } from './utils/date';
-import { parseSearchOperators, getSearchSuggestions, filterFiles, isSimpleTextSearch, highlightSearchTerms, getCleanQuery, type SearchState } from './utils/search';
+import { parseSearchOperators, getSearchSuggestions, filterFiles, isSimpleTextSearch, highlightSearchTerms, getCleanQuery, type SearchState, type SearchScore } from './utils/search';
 import { DEBOUNCE_REFRESH_MS, MAX_PREVIEW_LENGTH, CARD_SIZE, MAX_CARD_HEIGHT } from './utils/constants';
 
 export class VisualDashboardView extends ItemView {
@@ -45,6 +45,7 @@ export class VisualDashboardView extends ItemView {
 	private fileMtimeCache: Map<string, number> = new Map();
 	private fileTagsCache: Map<string, string[]> = new Map();
 	private cardObserver: IntersectionObserver | null = null;
+	private allFoldersDirty = true;
 
 	// Drawer state
 	private drawerEl: HTMLElement | null = null;
@@ -255,16 +256,21 @@ export class VisualDashboardView extends ItemView {
 		this.registerEvent(
 			this.app.vault.on('modify', (file) => {
 				this.fileMtimeCache.delete(file.path);
+				this.fileContentsCache.delete(file.path);
 				this.debouncedRefresh();
 			})
 		);
 		this.registerEvent(
-			this.app.vault.on('create', () => this.debouncedRefresh())
+			this.app.vault.on('create', () => {
+				this.allFoldersDirty = true;
+				this.debouncedRefresh();
+			})
 		);
 		this.registerEvent(
 			this.app.vault.on('delete', (file) => {
 				this.fileMtimeCache.delete(file.path);
 				this.fileContentsCache.delete(file.path);
+				this.allFoldersDirty = true;
 				this.debouncedRefresh();
 			})
 		);
@@ -272,6 +278,7 @@ export class VisualDashboardView extends ItemView {
 			this.app.vault.on('rename', (file, oldPath) => {
 				this.fileMtimeCache.delete(oldPath);
 				this.fileContentsCache.delete(oldPath);
+				this.allFoldersDirty = true;
 				this.debouncedRefresh();
 			})
 		);
@@ -316,6 +323,12 @@ export class VisualDashboardView extends ItemView {
 
 	private crossfadeGrid(applyFn: () => void) {
 		const grid = this.miniNotesGrid;
+
+		// Fast path: grid empty (initial load) — no fade-out needed, show instantly
+		if (grid.childElementCount === 0) {
+			applyFn();
+			return;
+		}
 
 		// Phase 1: fade out to fully invisible
 		grid.addClass('grid-fading-out');
@@ -794,15 +807,18 @@ export class VisualDashboardView extends ItemView {
 
 		this.allTags = Array.from(tagSet).sort();
 
-		// Get all folders in vault for folder suggestions
-		const folderSet = new Set<string>();
-		folderSet.add('/'); // Add root
-		this.app.vault.getAllLoadedFiles().forEach(file => {
-			if ('children' in file && file.children !== undefined) {
-				if (file.path && file.path !== '/' && file.path !== '') folderSet.add(file.path);
-			}
-		});
-		this.allFolders = Array.from(folderSet).sort();
+		// Recompute folder list only when vault structure changed
+		if (this.allFoldersDirty) {
+			const folderSet = new Set<string>();
+			folderSet.add('/');
+			this.app.vault.getAllLoadedFiles().forEach(file => {
+				if ('children' in file && file.children !== undefined) {
+					if (file.path && file.path !== '/' && file.path !== '') folderSet.add(file.path);
+				}
+			});
+			this.allFolders = Array.from(folderSet).sort();
+			this.allFoldersDirty = false;
+		}
 
 		// Apply all filters using search module
 		const searchState: SearchState = {
@@ -814,30 +830,42 @@ export class VisualDashboardView extends ItemView {
 			filterOperators: this.filterOperators
 		};
 		
-		files = filterFiles(
+		const filterResult = filterFiles(
 			files,
 			fileContents,
 			searchState,
 			(path) => this.plugin.isPinned(path),
 			(path) => this.plugin.data.noteColors[path]
 		);
+		files = filterResult.files;
+		const searchScores = filterResult.scores;
 
 		// Limit after filtering
 		files = files.slice(0, this.plugin.data.maxNotes);
 
-		// Separate and sort files by pin status
-		const sortByOrder = (a: TFile, b: TFile) => {
-			const aOrder = this.plugin.getOrderIndex(a.path);
-			const bOrder = this.plugin.getOrderIndex(b.path);
+		// During search: preserve MiniSearch relevance order (no pin/order re-sort)
+		// Browse mode: separate pinned from unpinned, sort by custom order then mtime
+		let pinnedFiles: TFile[];
+		let unpinnedFiles: TFile[];
 
-			if (aOrder > -1 && bOrder > -1) return aOrder - bOrder;
-			if (aOrder > -1) return -1;
-			if (bOrder > -1) return 1;
-			return b.stat.mtime - a.stat.mtime;
-		};
+		if (hasTextSearch) {
+			// Flat relevance order — pins don't override score
+			pinnedFiles = [];
+			unpinnedFiles = files;
+		} else {
+			const sortByOrder = (a: TFile, b: TFile) => {
+				const aOrder = this.plugin.getOrderIndex(a.path);
+				const bOrder = this.plugin.getOrderIndex(b.path);
 
-		const pinnedFiles = files.filter(f => this.plugin.isPinned(f.path)).sort(sortByOrder);
-		const unpinnedFiles = files.filter(f => !this.plugin.isPinned(f.path)).sort(sortByOrder);
+				if (aOrder > -1 && bOrder > -1) return aOrder - bOrder;
+				if (aOrder > -1) return -1;
+				if (bOrder > -1) return 1;
+				return b.stat.mtime - a.stat.mtime;
+			};
+
+			pinnedFiles = files.filter(f => this.plugin.isPinned(f.path)).sort(sortByOrder);
+			unpinnedFiles = files.filter(f => !this.plugin.isPinned(f.path)).sort(sortByOrder);
+		}
 
 		// Store the combined order for drag-and-drop
 		this.currentFiles = [...pinnedFiles, ...unpinnedFiles];
@@ -852,45 +880,42 @@ export class VisualDashboardView extends ItemView {
 			return;
 		}
 
-		let globalIndex = 0;
-
-		// Check if we need sections (both pinned and unpinned exist)
-		const needsSections = pinnedFiles.length > 0 && unpinnedFiles.length > 0;
-		const fragment = document.createDocumentFragment();
-
 		// Cancel any pending rich renders from previous render cycle
 		for (const id of this.pendingRichRenders) {
 			cancelIdleCallback(id);
 		}
 		this.pendingRichRenders = [];
 
+		// Progressive rendering: build above-the-fold cards immediately, defer rest
+		const FIRST_BATCH = 12; // ~2 rows, enough for viewport
+		const CHUNK_SIZE = 20;  // subsequent rAF batches
+
+		const needsSections = pinnedFiles.length > 0 && unpinnedFiles.length > 0;
+		const allOrdered = [...pinnedFiles, ...unpinnedFiles];
+		const pinnedCount = pinnedFiles.length;
+
+		// Build the initial DOM structure with section containers
+		const fragment = document.createDocumentFragment();
+		let pinnedGrid: HTMLElement | null = null;
+		let separatorEl: HTMLElement | null = null;
+		let unpinnedGrid: HTMLElement | null = null;
+
 		if (needsSections) {
-			// Render pinned section
-			if (pinnedFiles.length > 0) {
-				const pinnedGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
-				for (const file of pinnedFiles) {
-					const card = this.createCard(file, globalIndex++);
-					if (card) pinnedGrid.appendChild(card);
-				}
-			}
-
-			// Separator line between sections
-			fragment.createEl('div', { cls: 'section-separator' });
-
-			// Render all notes section
-			if (unpinnedFiles.length > 0) {
-				const notesGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
-				for (const file of unpinnedFiles) {
-					const card = this.createCard(file, globalIndex++);
-					if (card) notesGrid.appendChild(card);
-				}
-			}
+			pinnedGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
+			separatorEl = fragment.createEl('div', { cls: 'section-separator' });
+			unpinnedGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 		} else {
-			// Single section without header
-			const singleGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
-			for (const file of [...pinnedFiles, ...unpinnedFiles]) {
-				const card = this.createCard(file, globalIndex++);
-				if (card) singleGrid.appendChild(card);
+			unpinnedGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
+		}
+
+		// Render first batch synchronously (above the fold)
+		const firstBatchEnd = Math.min(FIRST_BATCH, allOrdered.length);
+		for (let i = 0; i < firstBatchEnd; i++) {
+			const file = allOrdered[i]!;
+			const card = this.createCard(file, i, searchScores);
+			if (card) {
+				const target = (needsSections && i < pinnedCount) ? pinnedGrid! : unpinnedGrid!;
+				target.appendChild(card);
 			}
 		}
 
@@ -898,6 +923,27 @@ export class VisualDashboardView extends ItemView {
 			this.miniNotesGrid.empty();
 			this.miniNotesGrid.appendChild(fragment);
 		});
+
+		// Render remaining cards in rAF chunks (off-screen, progressive)
+		if (firstBatchEnd < allOrdered.length) {
+			let cursor = firstBatchEnd;
+			const renderChunk = () => {
+				const end = Math.min(cursor + CHUNK_SIZE, allOrdered.length);
+				for (let i = cursor; i < end; i++) {
+					const file = allOrdered[i]!;
+					const card = this.createCard(file, i, searchScores);
+					if (card) {
+						const target = (needsSections && i < pinnedCount) ? pinnedGrid! : unpinnedGrid!;
+						target.appendChild(card);
+					}
+				}
+				cursor = end;
+				if (cursor < allOrdered.length) {
+					requestAnimationFrame(renderChunk);
+				}
+			};
+			requestAnimationFrame(renderChunk);
+		}
 		} catch (error) {
 			console.error('Error rendering cards:', error);
 			const errorMsg = this.miniNotesGrid.createDiv({ cls: 'dashboard-error' });
@@ -951,7 +997,7 @@ export class VisualDashboardView extends ItemView {
 		return processedLines.join('\n');
 	}
 
-	createCard(file: TFile, index: number): HTMLElement | null {
+	createCard(file: TFile, index: number, searchScores?: Map<string, SearchScore>): HTMLElement | null {
 		const card = document.createElement('div');
 		card.addClass('dashboard-card');
 		card.setAttribute('data-path', file.path);
@@ -1001,69 +1047,72 @@ export class VisualDashboardView extends ItemView {
 		});
 
 		// Color button (shows on hover) next to pin — toggled via settings
+		// Dropdown DOM is created lazily on first click to reduce initial card cost
 		if (this.plugin.data.showColorButton) {
 		const colorBtn = card.createEl('button', { cls: 'card-color-btn', attr: { 'aria-label': 'Change note color' } });
 		setIcon(colorBtn, 'palette');
 
-		// Create color palette dropdown using CSS variables
-		const pastelColors = [
-			'var(--pastel-peach)',    // Peach
-			'var(--pastel-yellow)',   // Yellow
-			'var(--pastel-green)',    // Green
-			'var(--pastel-blue)',     // Blue
-			'var(--pastel-purple)',   // Purple
-			'var(--pastel-magenta)',  // Pink
-			'var(--pastel-gray)'      // Gray (remove color)
-		];
+		let colorDropdown: HTMLElement | null = null;
 
-		const colorDropdown = card.createDiv({ cls: 'card-color-dropdown', attr: { role: 'menu', 'aria-label': 'Color options' } });
+		const ensureDropdown = (): HTMLElement => {
+			if (colorDropdown) return colorDropdown;
 
-		pastelColors.forEach((color, colorIndex) => {
-			const colorCircle = colorDropdown.createEl('button', { cls: 'color-circle', attr: { role: 'menuitem' } });
-			colorCircle.style.backgroundColor = color;
+			const pastelColors = [
+				'var(--pastel-peach)',    // Peach
+				'var(--pastel-yellow)',   // Yellow
+				'var(--pastel-green)',    // Green
+				'var(--pastel-blue)',     // Blue
+				'var(--pastel-purple)',   // Purple
+				'var(--pastel-magenta)',  // Pink
+				'var(--pastel-gray)'      // Gray (remove color)
+			];
 
-			// Last color is for removing
-			if (colorIndex === pastelColors.length - 1) {
-				colorCircle.addClass('color-circle-clear');
-				colorCircle.setAttribute('aria-label', 'Remove color');
-			} else {
-				colorCircle.setAttribute('aria-label', 'Apply color');
-			}
+			colorDropdown = card.createDiv({ cls: 'card-color-dropdown', attr: { role: 'menu', 'aria-label': 'Color options' } });
 
-			colorCircle.addEventListener('click', (e: MouseEvent) => {
-				e.stopPropagation();
+			pastelColors.forEach((color, colorIndex) => {
+				const colorCircle = colorDropdown!.createEl('button', { cls: 'color-circle', attr: { role: 'menuitem' } });
+				colorCircle.style.backgroundColor = color;
 
-				void (async () => {
-					if (colorIndex === pastelColors.length - 1) {
-						// Remove color - required to reset dynamically applied background color
-						// eslint-disable-next-line obsidianmd/no-static-styles-assignment
-						card.style.backgroundColor = '';
-						delete this.plugin.data.noteColors[file.path];
-					} else {
-						// Apply color using CSS variable
-						card.style.backgroundColor = color;
-						// Store the CSS variable name so it adapts to theme changes
-						this.plugin.data.noteColors[file.path] = color;
-					}
+				if (colorIndex === pastelColors.length - 1) {
+					colorCircle.addClass('color-circle-clear');
+					colorCircle.setAttribute('aria-label', 'Remove color');
+				} else {
+					colorCircle.setAttribute('aria-label', 'Apply color');
+				}
 
-					await this.plugin.savePluginData();
-					this.closeAllColorDropdowns();
-				})();
+				colorCircle.addEventListener('click', (e: MouseEvent) => {
+					e.stopPropagation();
+					void (async () => {
+						if (colorIndex === pastelColors.length - 1) {
+							// eslint-disable-next-line obsidianmd/no-static-styles-assignment
+							card.style.backgroundColor = '';
+							delete this.plugin.data.noteColors[file.path];
+						} else {
+							card.style.backgroundColor = color;
+							this.plugin.data.noteColors[file.path] = color;
+						}
+						await this.plugin.savePluginData();
+						this.closeAllColorDropdowns();
+					})();
+				});
 			});
-		});
 
-		// Toggle dropdown on click
+			return colorDropdown;
+		};
+
+		// Toggle dropdown on click — creates DOM lazily
 		colorBtn.addEventListener('click', (e: MouseEvent) => {
 			e.stopPropagation();
-			const shouldOpen = !colorDropdown.hasClass('show');
-			this.closeAllColorDropdowns(colorDropdown);
-			colorDropdown.toggleClass('show', shouldOpen);
-			this.activeColorDropdown = shouldOpen ? colorDropdown : null;
+			const dropdown = ensureDropdown();
+			const shouldOpen = !dropdown.hasClass('show');
+			this.closeAllColorDropdowns(dropdown);
+			dropdown.toggleClass('show', shouldOpen);
+			this.activeColorDropdown = shouldOpen ? dropdown : null;
 		});
 
 		// Close dropdown when clicking outside
 		card.addEventListener('click', () => {
-			if (this.activeColorDropdown === colorDropdown) {
+			if (colorDropdown && this.activeColorDropdown === colorDropdown) {
 				this.closeAllColorDropdowns();
 			}
 		});

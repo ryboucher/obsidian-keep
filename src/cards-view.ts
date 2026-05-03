@@ -1,4 +1,4 @@
-import { ItemView, TFile, WorkspaceLeaf, setIcon, MarkdownRenderer } from 'obsidian';
+import { ItemView, TFile, WorkspaceLeaf, setIcon, MarkdownRenderer, Platform } from 'obsidian';
 import type VisualDashboardPlugin from './main';
 import { VIEW_TYPE_VISUAL_DASHBOARD } from './utils/types';
 import { extractTags, getPreviewText, stripMarkdown } from './utils/markdown';
@@ -36,6 +36,12 @@ export class VisualDashboardView extends ItemView {
 	// Undo state
 	private deletedNotesStack: { path: string; content: string }[] = [];
 	private activeColorDropdown: HTMLElement | null = null;
+
+	// Progressive rendering state
+	private pendingRichRenders: number[] = [];
+	private fileContentsCache: Map<string, string> = new Map();
+	private fileTagsCache: Map<string, string[]> = new Map();
+	private cardObserver: IntersectionObserver | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: VisualDashboardPlugin) {
 		super(leaf);
@@ -437,20 +443,40 @@ export class VisualDashboardView extends ItemView {
 			.sort((a: TFile, b: TFile) => b.stat.mtime - a.stat.mtime)
 			.slice(0, this.plugin.data.maxNotes * FILE_FETCH_MULTIPLIER); // Get more initially for filtering
 
-		// Pre-load content for tag filtering with error handling
+		// Phase 1: Extract tags from metadataCache (zero disk I/O)
 		const fileContents = new Map<string, string>();
+		const fileTagsMap = new Map<string, string[]>();
 		const tagSet = new Set<string>();
 		for (const file of files) {
-			try {
-				const content = await this.app.vault.cachedRead(file);
-				fileContents.set(file.path, content);
-				const tags = extractTags(content);
-				tags.forEach(tag => tagSet.add(tag));
-			} catch (error) {
-				console.warn(`Failed to read file ${file.path}:`, error);
-				fileContents.set(file.path, '');
+			const cache = this.app.metadataCache.getFileCache(file);
+			const tags = (cache?.tags?.map(t => t.tag) ?? []);
+			// Deduplicate per-file
+			const uniqueTags = [...new Set(tags)];
+			fileTagsMap.set(file.path, uniqueTags);
+			uniqueTags.forEach(tag => tagSet.add(tag));
+		}
+		this.fileTagsCache = fileTagsMap;
+
+		// Phase 2: Read file content — batched, smaller batches on mobile
+		const BATCH_SIZE = Platform.isMobile ? 10 : 30;
+		for (let i = 0; i < files.length; i += BATCH_SIZE) {
+			const batch = files.slice(i, i + BATCH_SIZE);
+			const results = await Promise.all(
+				batch.map(async (file) => {
+					try {
+						return { path: file.path, content: await this.app.vault.cachedRead(file) };
+					} catch (error) {
+						console.warn(`Failed to read file ${file.path}:`, error);
+						return { path: file.path, content: '' };
+					}
+				})
+			);
+			for (const { path, content } of results) {
+				fileContents.set(path, content);
 			}
 		}
+		// Cache for createCard to avoid double reads
+		this.fileContentsCache = fileContents;
 
 		this.allTags = Array.from(tagSet).sort();
 
@@ -526,12 +552,18 @@ export class VisualDashboardView extends ItemView {
 		const needsSections = pinnedFiles.length > 0 && unpinnedFiles.length > 0;
 		const fragment = document.createDocumentFragment();
 
+		// Cancel any pending rich renders from previous render cycle
+		for (const id of this.pendingRichRenders) {
+			cancelIdleCallback(id);
+		}
+		this.pendingRichRenders = [];
+
 		if (needsSections) {
 			// Render pinned section
 			if (pinnedFiles.length > 0) {
 				const pinnedGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 				for (const file of pinnedFiles) {
-					const card = await this.createCard(file, globalIndex++);
+					const card = this.createCard(file, globalIndex++);
 					if (card) pinnedGrid.appendChild(card);
 				}
 			}
@@ -543,7 +575,7 @@ export class VisualDashboardView extends ItemView {
 			if (unpinnedFiles.length > 0) {
 				const notesGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 				for (const file of unpinnedFiles) {
-					const card = await this.createCard(file, globalIndex++);
+					const card = this.createCard(file, globalIndex++);
 					if (card) notesGrid.appendChild(card);
 				}
 			}
@@ -551,7 +583,7 @@ export class VisualDashboardView extends ItemView {
 			// Single section without header
 			const singleGrid = fragment.createEl('div', { cls: 'mini-notes-grid-section' });
 			for (const file of [...pinnedFiles, ...unpinnedFiles]) {
-				const card = await this.createCard(file, globalIndex++);
+				const card = this.createCard(file, globalIndex++);
 				if (card) singleGrid.appendChild(card);
 			}
 		}
@@ -582,69 +614,61 @@ export class VisualDashboardView extends ItemView {
 		}
 	}
 
-	async createCard(file: TFile, index: number): Promise<HTMLElement | null> {
-		const card = document.createElement('div');
-		card.addClass('dashboard-card');
-		card.setAttribute('data-path', file.path);
-		card.setAttribute('data-index', index.toString());
-		card.setAttribute('draggable', 'true');
-		
-		// Add isolated View Transition Name to smoothly animate layout bumps
-		const safeCssIdent = 'card-' + file.path.replace(/[^a-zA-Z0-9_-]/g, '-');
-		card.style.setProperty('view-transition-name', safeCssIdent);
-
-		try {
-			// Get content and preview
-			const content = await this.app.vault.cachedRead(file);
-		const cleanContent = stripMarkdown(content);
-		const previewLength = Math.min(cleanContent.length, MAX_PREVIEW_LENGTH);
-		
+	private getPreviewMarkdown(content: string): string {
 		// Truncate raw content for preview (keep markdown formatting for proper rendering)
 		let previewText = content;
 		if (content.length > MAX_PREVIEW_LENGTH) {
 			// Find a good break point (end of line) near the limit
 			const truncated = content.substring(0, MAX_PREVIEW_LENGTH);
 			const lastNewline = truncated.lastIndexOf('\n');
-			previewText = lastNewline > MAX_PREVIEW_LENGTH * 0.7 
+			previewText = lastNewline > MAX_PREVIEW_LENGTH * 0.7
 				? truncated.substring(0, lastNewline)
 				: truncated;
 		}
-		
+
 		// Remove Obsidian tags from preview (they're shown in the footer)
 		// split by lines and only remove tags outside code blocks
 		const lines = previewText.split('\n');
 		let inCodeBlock = false;
 		const processedLines = lines.map(line => {
-			// Check if we're entering/exiting a code block
 			if (line.trim().startsWith('```')) {
 				inCodeBlock = !inCodeBlock;
-				return line; // Keep the line as-is
-			}
-			
-			// If we're in a code block, don't touch anything
-			if (inCodeBlock) {
 				return line;
 			}
-			
-			// If we're outside code blocks, remove Obsidian tags but preserve inline code
-			// First protect inline code
+			if (inCodeBlock) return line;
+
 			const inlineCodeParts: string[] = [];
 			let tempLine = line.replace(/`[^`]+`/g, (match) => {
 				inlineCodeParts.push(match);
 				return `\u200B${inlineCodeParts.length - 1}\u200B`;
 			});
-			
-			// Remove Obsidian tags (space + # + alphanumeric)
+
 			tempLine = tempLine.replace(/(\s)#[a-zA-Z][a-zA-Z0-9_-]*/g, '$1');
 			tempLine = tempLine.replace(/^#[a-zA-Z][a-zA-Z0-9_-]*/g, '');
-			
-			// Restore inline code
 			tempLine = tempLine.replace(/\u200B(\d+)\u200B/g, (_, idx) => inlineCodeParts[parseInt(idx)] || '');
-			
+
 			return tempLine;
 		});
-		
-		previewText = processedLines.join('\n');
+
+		return processedLines.join('\n');
+	}
+
+	createCard(file: TFile, index: number): HTMLElement | null {
+		const card = document.createElement('div');
+		card.addClass('dashboard-card');
+		card.setAttribute('data-path', file.path);
+		card.setAttribute('data-index', index.toString());
+		card.setAttribute('draggable', 'true');
+
+		// Add isolated View Transition Name to smoothly animate layout bumps
+		const safeCssIdent = 'card-' + file.path.replace(/[^a-zA-Z0-9_-]/g, '-');
+		card.style.setProperty('view-transition-name', safeCssIdent);
+
+		try {
+			// Use cached content — no async read needed
+			const content = this.fileContentsCache.get(file.path) || '';
+		const previewText = this.getPreviewMarkdown(content);
+
 		// Check if pinned
 		const isPinned = this.plugin.isPinned(file.path);
 		if (isPinned) {
@@ -680,7 +704,7 @@ export class VisualDashboardView extends ItemView {
 		const colorBtn = card.createDiv({ cls: 'card-color-btn' });
 		setIcon(colorBtn, 'palette');
 		colorBtn.setAttribute('aria-label', 'Change note color');
-		
+
 		// Create color palette dropdown using CSS variables
 		const pastelColors = [
 			'var(--pastel-peach)',    // Peach
@@ -691,26 +715,26 @@ export class VisualDashboardView extends ItemView {
 			'var(--pastel-magenta)',  // Pink
 			'var(--pastel-gray)'      // Gray (remove color)
 		];
-		
+
 		const colorDropdown = card.createDiv({ cls: 'card-color-dropdown' });
-		
-		pastelColors.forEach((color, index) => {
+
+		pastelColors.forEach((color, colorIndex) => {
 			const colorCircle = colorDropdown.createDiv({ cls: 'color-circle' });
 			colorCircle.style.backgroundColor = color;
-			
+
 			// Last color is for removing
-			if (index === pastelColors.length - 1) {
+			if (colorIndex === pastelColors.length - 1) {
 				colorCircle.addClass('color-circle-clear');
 				colorCircle.setAttribute('aria-label', 'Remove color');
 			} else {
 				colorCircle.setAttribute('aria-label', 'Apply color');
 			}
-			
+
 			colorCircle.addEventListener('click', (e: MouseEvent) => {
 				e.stopPropagation();
-				
+
 				void (async () => {
-					if (index === pastelColors.length - 1) {
+					if (colorIndex === pastelColors.length - 1) {
 						// Remove color - required to reset dynamically applied background color
 						// eslint-disable-next-line obsidianmd/no-static-styles-assignment
 						card.style.backgroundColor = '';
@@ -721,13 +745,13 @@ export class VisualDashboardView extends ItemView {
 						// Store the CSS variable name so it adapts to theme changes
 						this.plugin.data.noteColors[file.path] = color;
 					}
-					
+
 					await this.plugin.savePluginData();
 					this.closeAllColorDropdowns();
 				})();
 			});
 		});
-		
+
 		// Toggle dropdown on click
 		colorBtn.addEventListener('click', (e: MouseEvent) => {
 			e.stopPropagation();
@@ -736,7 +760,7 @@ export class VisualDashboardView extends ItemView {
 			colorDropdown.toggleClass('show', shouldOpen);
 			this.activeColorDropdown = shouldOpen ? colorDropdown : null;
 		});
-		
+
 		// Close dropdown when clicking outside
 		card.addEventListener('click', () => {
 			if (this.activeColorDropdown === colorDropdown) {
@@ -754,20 +778,44 @@ export class VisualDashboardView extends ItemView {
 		});
 		title.setAttribute('title', file.basename);
 
-		// Card content (preview) - render with Obsidian's markdown renderer
+		// Card content — Phase 1: instant plaintext preview
 		const cardContent = card.createDiv({ cls: 'card-content' });
 		if (previewText.trim()) {
 			const previewContainer = cardContent.createDiv({ cls: 'card-preview' });
-			// Render markdown natively with Obsidian's renderer
-			await MarkdownRenderer.render(
-				this.app,
-				previewText,
-				previewContainer,
-				file.path,
-				this
-			);
-			
-			// Apply search highlighting for simple text searches
+			// Synchronous plaintext for instant render
+			previewContainer.textContent = getPreviewText(content, MAX_PREVIEW_LENGTH);
+
+			// Phase 2: upgrade to rich markdown in background
+			// On mobile, use longer timeout — idle windows are tiny (5-10ms)
+			const idleTimeout = Platform.isMobile ? 5000 : 3000;
+			const richRenderId = requestIdleCallback(() => {
+				const richContainer = document.createElement('div');
+				richContainer.addClass('card-preview');
+				void MarkdownRenderer.render(
+					this.app,
+					previewText,
+					richContainer,
+					file.path,
+					this
+				).then(() => {
+					// Only swap if card is still in DOM (not re-rendered)
+					if (previewContainer.isConnected) {
+						previewContainer.replaceWith(richContainer);
+
+						// Apply search highlighting after rich render
+						if (this.filterSearch && isSimpleTextSearch(this.filterSearch)) {
+							const cleanQuery = getCleanQuery(this.filterSearch);
+							if (cleanQuery) {
+								highlightSearchTerms(title, cleanQuery);
+								highlightSearchTerms(richContainer, cleanQuery);
+							}
+						}
+					}
+				});
+			}, { timeout: idleTimeout });
+			this.pendingRichRenders.push(richRenderId);
+
+			// Search highlighting on plaintext phase (visible until rich render swaps in)
 			if (this.filterSearch && isSimpleTextSearch(this.filterSearch)) {
 				const cleanQuery = getCleanQuery(this.filterSearch);
 				if (cleanQuery) {
@@ -787,7 +835,7 @@ export class VisualDashboardView extends ItemView {
 
 		// Tags on left
 		const tagsContainer = cardFooter.createDiv({ cls: 'card-tags' });
-		const tags = extractTags(content);
+		const tags = this.fileTagsCache.get(file.path) || [];
 		if (tags.length > 0) {
 			tags.slice(0, 3).forEach(tag => {
 				tagsContainer.createSpan({ cls: 'card-tag', text: tag });
@@ -796,7 +844,7 @@ export class VisualDashboardView extends ItemView {
 				tagsContainer.createSpan({ cls: 'card-tag-more', text: `+${tags.length - 3}` });
 			}
 		}
-		
+
 		// Date on right
 		const dateSpan = cardFooter.createSpan({ cls: 'card-date' });
 		dateSpan.createSpan({ text: formatDate(file.stat.mtime) });
@@ -812,7 +860,7 @@ export class VisualDashboardView extends ItemView {
 				} catch (err) {
 					console.error('Could not save note content for undo', err);
 				}
-				
+
 				await this.app.fileManager.trashFile(file);
 				// Trigger immediate layout refresh instead of waiting 1 second for the vault event debouncer
 				void this.renderCards();
@@ -834,7 +882,6 @@ export class VisualDashboardView extends ItemView {
 		card.addEventListener('drop', (e: DragEvent) => void this.handleDrop(e, card));
 		} catch (error) {
 			console.warn(`Skipping card for ${file.path} due to error:`, error);
-			// Return null to skip this card entirely
 			return null;
 		}
 
@@ -985,7 +1032,18 @@ export class VisualDashboardView extends ItemView {
 	}
 
 async onClose() {
-		
+		// Cancel pending rich renders
+		for (const id of this.pendingRichRenders) {
+			cancelIdleCallback(id);
+		}
+		this.pendingRichRenders = [];
+		this.fileContentsCache.clear();
+		this.fileTagsCache.clear();
+		if (this.cardObserver) {
+			this.cardObserver.disconnect();
+			this.cardObserver = null;
+		}
+
 		// Event cleanup handled automatically by registerEvent
 		this.contentEl.empty();
 	}

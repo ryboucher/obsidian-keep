@@ -511,6 +511,9 @@
     overflow: hidden;
     will-change: transform;
     transform: translateZ(0);
+    /* Skip layout/paint for offscreen cards — major mobile perf win */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 200px;
     backface-visibility: hidden;
 }
 

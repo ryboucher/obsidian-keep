@@ -4,7 +4,7 @@ import { VIEW_TYPE_VISUAL_DASHBOARD } from './utils/types';
 import { extractTags, getPreviewText, stripMarkdown } from './utils/markdown';
 import { formatDate } from './utils/date';
 import { parseSearchOperators, getSearchSuggestions, filterFiles, isSimpleTextSearch, highlightSearchTerms, getCleanQuery, type SearchState } from './utils/search';
-import { FILE_FETCH_MULTIPLIER, DEBOUNCE_REFRESH_MS, MAX_PREVIEW_LENGTH, CARD_SIZE, MAX_CARD_HEIGHT } from './utils/constants';
+import { DEBOUNCE_REFRESH_MS, MAX_PREVIEW_LENGTH, CARD_SIZE, MAX_CARD_HEIGHT } from './utils/constants';
 
 export class VisualDashboardView extends ItemView {
 	private miniNotesGrid!: HTMLElement;
@@ -740,16 +740,15 @@ export class VisualDashboardView extends ItemView {
 		// Filter out config folder files to avoid reading plugin/config files
 		files = files.filter((file: TFile) => !file.path.startsWith(this.app.vault.configDir + '/'));
 		
-		// When text search is active, fetch more files to filter from.
-		// Otherwise, fetch only what we'll display — much faster.
-		const hasTextSearch = this.filterSearch && isSimpleTextSearch(this.filterSearch);
-		const fetchLimit = hasTextSearch
-			? this.plugin.data.maxNotes * FILE_FETCH_MULTIPLIER
-			: this.plugin.data.maxNotes;
+		// When text search is active, search the entire vault (no cap).
+		// Persistent mtime cache makes this cheap after first load.
+		// Without search, cap to maxNotes for display performance.
+		const hasTextSearch = this.filterSearch && getCleanQuery(this.filterSearch).length > 0;
 
-		files = files
-			.sort((a: TFile, b: TFile) => b.stat.mtime - a.stat.mtime)
-			.slice(0, fetchLimit);
+		files = files.sort((a: TFile, b: TFile) => b.stat.mtime - a.stat.mtime);
+		if (!hasTextSearch) {
+			files = files.slice(0, this.plugin.data.maxNotes);
+		}
 
 		// Phase 1: Extract tags from metadataCache (zero disk I/O)
 		const fileTagsMap = new Map<string, string[]>();

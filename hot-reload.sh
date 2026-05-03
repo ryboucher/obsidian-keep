@@ -4,7 +4,7 @@
 
 export MSYS_NO_PATHCONV=1
 
-PHONE="192.168.1.184:40179"
+PHONE="192.168.1.184:43369"
 PHONE_PLUGIN_DIR="/storage/emulated/0/Obsidian Notes/Vault/.obsidian/plugins/obsidian-mini-notes"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 

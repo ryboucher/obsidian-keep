@@ -27,6 +27,24 @@
 }
 
 /* Main container */
+/* ============================================
+   Button Reset (semantic <button> elements)
+   ============================================ */
+
+.card-pin-btn,
+.card-color-btn,
+.create-note-btn,
+.search-clear-btn,
+.color-circle {
+    border: none;
+    background: none;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
 .visual-dashboard-container {
     height: 100%;
     overflow-y: auto;
@@ -1085,5 +1103,59 @@
     
     .search-input::placeholder {
         font-size: 13px;
+    }
+}
+
+/* ============================================
+   Undo Toast
+   ============================================ */
+
+.undo-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    z-index: var(--layer-popover);
+    font-size: 14px;
+    color: var(--text-normal);
+    animation: undo-toast-in 200ms ease-out;
+}
+
+.undo-toast-hiding {
+    opacity: 0;
+    transition: opacity 300ms ease-out;
+}
+
+.undo-toast-btn {
+    border: none;
+    background: none;
+    padding: 4px 8px;
+    font: inherit;
+    font-weight: 600;
+    color: var(--interactive-accent);
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.undo-toast-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+@keyframes undo-toast-in {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
     }
 }

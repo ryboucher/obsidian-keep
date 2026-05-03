@@ -36,6 +36,8 @@ export class VisualDashboardView extends ItemView {
 	// Undo state
 	private deletedNotesStack: { path: string; content: string }[] = [];
 	private activeColorDropdown: HTMLElement | null = null;
+	private undoToastEl: HTMLElement | null = null;
+	private undoToastTimeoutId: number | null = null;
 
 	// Progressive rendering state
 	private pendingRichRenders: number[] = [];
@@ -108,16 +110,17 @@ export class VisualDashboardView extends ItemView {
 		const searchIcon = searchWrapper.createDiv({ cls: 'search-icon' });
 		setIcon(searchIcon, 'search');
 		
-		const searchInput = searchWrapper.createEl('input', { 
-			type: 'text', 
+		const searchInput = searchWrapper.createEl('input', {
+			type: 'text',
 			placeholder: 'Search notes (try folder:, tag:, color:, type:, is:pinned)',
-			cls: 'search-input'
+			cls: 'search-input',
+			attr: { 'aria-label': 'Search notes' }
 		});
 		
 		searchInput.value = this.filterSearch;
 		
 		// Clear button
-		const clearBtn = searchWrapper.createDiv({ cls: 'search-clear-btn' });
+		const clearBtn = searchWrapper.createEl('button', { cls: 'search-clear-btn', attr: { 'aria-label': 'Clear search' } });
 		setIcon(clearBtn, 'x');
 		clearBtn.style.display = this.filterSearch ? 'flex' : 'none';
 		
@@ -199,7 +202,7 @@ export class VisualDashboardView extends ItemView {
 		});
 
 		// Create new note button
-		const createBtn = controls.createDiv({ cls: 'create-note-btn', attr: { 'aria-label': 'Create new mini note' } });
+		const createBtn = controls.createEl('button', { cls: 'create-note-btn', attr: { 'aria-label': 'Create new mini note' } });
 		setIcon(createBtn, 'plus');
 		createBtn.addEventListener('click', async () => {
 			await this.plugin.createMiniNote();
@@ -389,6 +392,47 @@ export class VisualDashboardView extends ItemView {
 		if (filterChipsContainer) {
 			filterChipsContainer.style.display = 'none';
 		}
+	}
+
+	private showUndoToast(fileName: string) {
+		// Remove existing toast
+		if (this.undoToastEl) {
+			this.undoToastEl.remove();
+			this.undoToastEl = null;
+		}
+		if (this.undoToastTimeoutId !== null) {
+			window.clearTimeout(this.undoToastTimeoutId);
+		}
+
+		const toast = this.contentEl.createDiv({ cls: 'undo-toast' });
+		toast.createSpan({ text: `"${fileName}" moved to trash` });
+		const undoBtn = toast.createEl('button', { text: 'Undo', cls: 'undo-toast-btn' });
+		undoBtn.addEventListener('click', async () => {
+			const lastDeleted = this.deletedNotesStack.pop();
+			if (lastDeleted) {
+				try {
+					const fileExists = this.app.vault.getAbstractFileByPath(lastDeleted.path);
+					if (!fileExists) {
+						await this.app.vault.create(lastDeleted.path, lastDeleted.content);
+						void this.renderCards();
+					}
+				} catch (error) {
+					console.error('Failed to restore deleted note:', error);
+				}
+			}
+			toast.remove();
+			this.undoToastEl = null;
+		});
+
+		this.undoToastEl = toast;
+		// 10s undo window (ADHD-friendly per PRODUCT.md)
+		this.undoToastTimeoutId = window.setTimeout(() => {
+			toast.addClass('undo-toast-hiding');
+			window.setTimeout(() => {
+				toast.remove();
+				this.undoToastEl = null;
+			}, 300);
+		}, 10000);
 	}
 
 	private closeAllColorDropdowns(except: HTMLElement | null = null) {
@@ -659,6 +703,9 @@ export class VisualDashboardView extends ItemView {
 		card.setAttribute('data-path', file.path);
 		card.setAttribute('data-index', index.toString());
 		card.setAttribute('draggable', 'true');
+		card.setAttribute('role', 'article');
+		card.setAttribute('tabindex', '0');
+		card.setAttribute('aria-label', file.basename);
 
 		// Add isolated View Transition Name to smoothly animate layout bumps
 		const safeCssIdent = 'card-' + file.path.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -688,9 +735,8 @@ export class VisualDashboardView extends ItemView {
 		card.style.overflow = 'hidden';
 
 		// Pin button (shows on hover)
-		const pinBtn = card.createDiv({ cls: 'card-pin-btn' + (isPinned ? ' pinned' : '') });
+		const pinBtn = card.createEl('button', { cls: 'card-pin-btn' + (isPinned ? ' pinned' : ''), attr: { 'aria-label': isPinned ? 'Unpin note' : 'Pin note' } });
 		setIcon(pinBtn, 'pin');
-		pinBtn.setAttribute('aria-label', isPinned ? 'Unpin note' : 'Pin note');
 		pinBtn.addEventListener('click', (e: MouseEvent) => {
 			e.stopPropagation();
 			void this.plugin.togglePin(file.path).then(async (nowPinned) => {
@@ -701,9 +747,8 @@ export class VisualDashboardView extends ItemView {
 		});
 
 		// Color button (shows on hover) next to pin
-		const colorBtn = card.createDiv({ cls: 'card-color-btn' });
+		const colorBtn = card.createEl('button', { cls: 'card-color-btn', attr: { 'aria-label': 'Change note color' } });
 		setIcon(colorBtn, 'palette');
-		colorBtn.setAttribute('aria-label', 'Change note color');
 
 		// Create color palette dropdown using CSS variables
 		const pastelColors = [
@@ -716,10 +761,10 @@ export class VisualDashboardView extends ItemView {
 			'var(--pastel-gray)'      // Gray (remove color)
 		];
 
-		const colorDropdown = card.createDiv({ cls: 'card-color-dropdown' });
+		const colorDropdown = card.createDiv({ cls: 'card-color-dropdown', attr: { role: 'menu', 'aria-label': 'Color options' } });
 
 		pastelColors.forEach((color, colorIndex) => {
-			const colorCircle = colorDropdown.createDiv({ cls: 'color-circle' });
+			const colorCircle = colorDropdown.createEl('button', { cls: 'color-circle', attr: { role: 'menuitem' } });
 			colorCircle.style.backgroundColor = color;
 
 			// Last color is for removing
@@ -854,7 +899,6 @@ export class VisualDashboardView extends ItemView {
 			if (e.button === 1) { // Middle click button
 				e.preventDefault();
 				try {
-					// Save to undo stack before trashing
 					const contentToSave = await this.app.vault.read(file);
 					this.deletedNotesStack.push({ path: file.path, content: contentToSave });
 				} catch (err) {
@@ -862,17 +906,27 @@ export class VisualDashboardView extends ItemView {
 				}
 
 				await this.app.fileManager.trashFile(file);
-				// Trigger immediate layout refresh instead of waiting 1 second for the vault event debouncer
+				this.showUndoToast(file.basename);
 				void this.renderCards();
 			}
 		});
 
 		// Click handler to open the note
 		card.addEventListener('click', (e: MouseEvent) => {
-			// Don't open if clicking pin button or during drag
-			if ((e.target as HTMLElement).closest('.card-pin-btn')) return;
+			// Don't open if clicking interactive elements or during drag
+			if ((e.target as HTMLElement).closest('.card-pin-btn, .card-color-btn, .card-color-dropdown')) return;
 			const leaf = this.app.workspace.getLeaf('tab');
 			void leaf.openFile(file);
+		});
+
+		// Keyboard handler — Enter/Space opens the note
+		card.addEventListener('keydown', (e: KeyboardEvent) => {
+			if (e.key === 'Enter' || e.key === ' ') {
+				if ((e.target as HTMLElement).closest('button')) return;
+				e.preventDefault();
+				const leaf = this.app.workspace.getLeaf('tab');
+				void leaf.openFile(file);
+			}
 		});
 
 		// Drag and drop handlers

@@ -13,6 +13,7 @@ export interface DashboardData {
 	themeColor: 'obsidian' | 'black' | 'custom';
 	customThemeColor: string;
 	bookmarkedFolders: string[];
+	showColorButton: boolean;
 }
 
 export const DEFAULT_DATA: DashboardData = {
@@ -25,5 +26,6 @@ export const DEFAULT_DATA: DashboardData = {
 	noteColors: {},
 	themeColor: 'obsidian',
 	customThemeColor: '#000000',
-	bookmarkedFolders: []
+	bookmarkedFolders: [],
+	showColorButton: true
 };

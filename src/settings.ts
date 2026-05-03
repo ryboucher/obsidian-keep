@@ -91,6 +91,18 @@ export class MiniNotesSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName('Show color button on cards')
+			.setDesc('Show the palette icon on each card for changing note color')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.data.showColorButton)
+				.onChange(async (value) => {
+					this.plugin.data.showColorButton = value;
+					await this.plugin.savePluginData();
+					this.app.workspace.trigger('mini-notes:settings-changed');
+				})
+			);
+
+		new Setting(containerEl)
 			.setName('Theme color')
 			.setDesc('Color for borders, pins, and accents')
 			.addDropdown(dropdown => {

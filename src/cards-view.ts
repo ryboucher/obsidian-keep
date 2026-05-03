@@ -1001,7 +1001,8 @@ export class VisualDashboardView extends ItemView {
 			});
 		});
 
-		// Color button (shows on hover) next to pin
+		// Color button (shows on hover) next to pin — toggled via settings
+		if (this.plugin.data.showColorButton) {
 		const colorBtn = card.createEl('button', { cls: 'card-color-btn', attr: { 'aria-label': 'Change note color' } });
 		setIcon(colorBtn, 'palette');
 
@@ -1067,6 +1068,7 @@ export class VisualDashboardView extends ItemView {
 				this.closeAllColorDropdowns();
 			}
 		});
+		} // end showColorButton
 
 		// Card header with file info
 		const cardHeader = card.createDiv({ cls: 'card-header' });

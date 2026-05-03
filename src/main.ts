@@ -42,6 +42,11 @@ export default class VisualDashboardPlugin extends Plugin {
 			}
 		});
 
+		// Register URI handler: obsidian://mini-notes opens the dashboard directly
+		this.registerObsidianProtocolHandler('mini-notes', async () => {
+			await this.activateView();
+		});
+
 		// Add settings tab
 		this.addSettingTab(new MiniNotesSettingTab(this.app, this));
 

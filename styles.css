@@ -528,12 +528,9 @@
     margin-bottom: 12px;
     max-height: 600px;
     overflow: hidden;
-    will-change: transform;
-    transform: translateZ(0);
     /* Skip layout/paint for offscreen cards — major mobile perf win */
     content-visibility: auto;
     contain-intrinsic-size: auto 200px;
-    backface-visibility: hidden;
 }
 
 .dashboard-card:hover {
@@ -545,6 +542,8 @@
     opacity: 0.7;
     cursor: pointer;
     transform: scale(0.99);
+    will-change: transform;
+    backface-visibility: hidden;
 }
 
 .dashboard-card.drag-over {

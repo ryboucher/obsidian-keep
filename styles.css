@@ -879,6 +879,7 @@
     margin-bottom: 12px;
     max-height: 600px;
     overflow: hidden;
+    text-align: left;
     /* Skip layout/paint for offscreen cards — major mobile perf win */
     content-visibility: auto;
     contain-intrinsic-size: auto 200px;
@@ -1067,6 +1068,7 @@
     color: var(--text-normal);
     line-height: 1.35;
     overflow-wrap: break-word;
+    text-align: left;
 }
 
 /* Text on colored cards in dark theme — use Obsidian tokens, not hardcoded */

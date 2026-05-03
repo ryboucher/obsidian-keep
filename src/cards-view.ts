@@ -4,7 +4,7 @@ import { VIEW_TYPE_VISUAL_DASHBOARD } from './utils/types';
 import { extractTags, getPreviewText, stripMarkdown } from './utils/markdown';
 import { formatDate } from './utils/date';
 import { parseSearchOperators, getSearchSuggestions, filterFiles, isSimpleTextSearch, highlightSearchTerms, getCleanQuery, type SearchState, type SearchScore } from './utils/search';
-import { DEBOUNCE_REFRESH_MS, MAX_PREVIEW_LENGTH, CARD_SIZE, MAX_CARD_HEIGHT } from './utils/constants';
+import { DEBOUNCE_REFRESH_MS, DEBOUNCE_SEARCH_MS, MAX_PREVIEW_LENGTH, CARD_SIZE, MAX_CARD_HEIGHT } from './utils/constants';
 
 export class VisualDashboardView extends ItemView {
 	private miniNotesGrid!: HTMLElement;
@@ -17,6 +17,7 @@ export class VisualDashboardView extends ItemView {
 	private currentFiles: TFile[] = [];
 	private settingsChangedHandler: () => void;
 	private refreshTimeoutId: number | null = null;
+	private searchTimeoutId: number | null = null;
 	private eventsRegistered = false;
 
 	// Filter state
@@ -170,9 +171,9 @@ export class VisualDashboardView extends ItemView {
 			// Show suggestions
 			this.updateSearchSuggestions(target.value);
 			
-			// Parse operators and use debounced refresh
+			// Parse operators and use fast search debounce
 			this.updateSearchState(target.value);
-			this.debouncedRefresh();
+			this.debouncedSearch();
 		});
 		
 		// Close suggestions on blur
@@ -321,11 +322,11 @@ export class VisualDashboardView extends ItemView {
 		await this.renderCards();
 	}
 
-	private crossfadeGrid(applyFn: () => void) {
+	private crossfadeGrid(applyFn: () => void, instant = false) {
 		const grid = this.miniNotesGrid;
 
-		// Fast path: grid empty (initial load) — no fade-out needed, show instantly
-		if (grid.childElementCount === 0) {
+		// Fast path: empty grid (initial load) or instant mode (search) — no animation
+		if (grid.childElementCount === 0 || instant) {
 			applyFn();
 			return;
 		}
@@ -354,11 +355,27 @@ export class VisualDashboardView extends ItemView {
 		if (this.refreshTimeoutId !== null) {
 			window.clearTimeout(this.refreshTimeoutId);
 		}
-		
+
 		this.refreshTimeoutId = window.setTimeout(() => {
 			void this.renderCards();
 			this.refreshTimeoutId = null;
 		}, DEBOUNCE_REFRESH_MS);
+	}
+
+	private debouncedSearch() {
+		// Cancel any pending vault-event refresh — search takes priority
+		if (this.refreshTimeoutId !== null) {
+			window.clearTimeout(this.refreshTimeoutId);
+			this.refreshTimeoutId = null;
+		}
+		if (this.searchTimeoutId !== null) {
+			window.clearTimeout(this.searchTimeoutId);
+		}
+
+		this.searchTimeoutId = window.setTimeout(() => {
+			void this.renderCards();
+			this.searchTimeoutId = null;
+		}, DEBOUNCE_SEARCH_MS);
 	}
 
 	private updateSearchState(query: string) {
@@ -756,11 +773,15 @@ export class VisualDashboardView extends ItemView {
 		// When text search is active, search the entire vault (no cap).
 		// Persistent mtime cache makes this cheap after first load.
 		// Without search, cap to maxNotes for display performance.
-		const hasTextSearch = this.filterSearch && getCleanQuery(this.filterSearch).length > 0;
+		const hasTextSearch = !!(this.filterSearch && getCleanQuery(this.filterSearch).length > 0);
 
 		files = files.sort((a: TFile, b: TFile) => b.stat.mtime - a.stat.mtime);
 		if (!hasTextSearch) {
-			files = files.slice(0, this.plugin.data.maxNotes);
+			const capped = files.slice(0, this.plugin.data.maxNotes);
+			const cappedPaths = new Set(capped.map(f => f.path));
+			// Always include pinned notes even if beyond maxNotes cap
+			const missingPinned = files.filter(f => !cappedPaths.has(f.path) && this.plugin.isPinned(f.path));
+			files = [...capped, ...missingPinned];
 		}
 
 		// Phase 1: Extract tags from metadataCache (zero disk I/O)
@@ -840,8 +861,11 @@ export class VisualDashboardView extends ItemView {
 		files = filterResult.files;
 		const searchScores = filterResult.scores;
 
-		// Limit after filtering
-		files = files.slice(0, this.plugin.data.maxNotes);
+		// Limit after filtering — but always keep pinned notes
+		const limitedFiles = files.slice(0, this.plugin.data.maxNotes);
+		const limitedPaths = new Set(limitedFiles.map(f => f.path));
+		const missingPinnedAfterFilter = files.filter(f => !limitedPaths.has(f.path) && this.plugin.isPinned(f.path));
+		files = [...limitedFiles, ...missingPinnedAfterFilter];
 
 		// During search: preserve MiniSearch relevance order (no pin/order re-sort)
 		// Browse mode: separate pinned from unpinned, sort by custom order then mtime
@@ -876,7 +900,7 @@ export class VisualDashboardView extends ItemView {
 				const emptyState = this.miniNotesGrid.createDiv({ cls: 'dashboard-empty-state' });
 				emptyState.createEl('h3', { text: 'No matching notes' });
 				emptyState.createEl('p', { text: 'Try adjusting your filters' });
-			});
+			}, hasTextSearch);
 			return;
 		}
 
@@ -922,7 +946,7 @@ export class VisualDashboardView extends ItemView {
 		this.crossfadeGrid(() => {
 			this.miniNotesGrid.empty();
 			this.miniNotesGrid.appendChild(fragment);
-		});
+		}, hasTextSearch);
 
 		// Render remaining cards in rAF chunks (off-screen, progressive)
 		if (firstBatchEnd < allOrdered.length) {

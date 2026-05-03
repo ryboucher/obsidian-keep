@@ -1,6 +1,7 @@
 export const FILE_FETCH_MULTIPLIER = 3;
 
 export const DEBOUNCE_REFRESH_MS = 1000;
+export const DEBOUNCE_SEARCH_MS = 300;
 export const MAX_PREVIEW_LENGTH = 800;
 
 export const MAX_CARD_HEIGHT = 600;

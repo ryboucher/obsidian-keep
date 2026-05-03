@@ -1200,17 +1200,15 @@ export class VisualDashboardView extends ItemView {
 				'var(--pastel-gray)'      // Gray (remove color)
 			];
 
-			colorDropdown = card.createDiv({ cls: 'card-color-dropdown', attr: { role: 'menu', 'aria-label': 'Color options' } });
+			const colorNames = ['Peach', 'Yellow', 'Green', 'Blue', 'Purple', 'Pink', 'Remove color'];
+			colorDropdown = card.createDiv({ cls: 'card-color-dropdown', attr: { role: 'menu', 'aria-label': 'Color options', tabindex: '-1' } });
 
 			pastelColors.forEach((color, colorIndex) => {
-				const colorCircle = colorDropdown!.createEl('button', { cls: 'color-circle', attr: { role: 'menuitem' } });
+				const colorCircle = colorDropdown!.createEl('button', { cls: 'color-circle', attr: { role: 'menuitem', 'aria-label': colorNames[colorIndex] || 'Apply color' } });
 				colorCircle.style.backgroundColor = color;
 
 				if (colorIndex === pastelColors.length - 1) {
 					colorCircle.addClass('color-circle-clear');
-					colorCircle.setAttribute('aria-label', 'Remove color');
-				} else {
-					colorCircle.setAttribute('aria-label', 'Apply color');
 				}
 
 				colorCircle.addEventListener('click', (e: MouseEvent) => {
@@ -1230,6 +1228,26 @@ export class VisualDashboardView extends ItemView {
 				});
 			});
 
+			// Arrow-key navigation within menu (WCAG menu pattern)
+			colorDropdown.addEventListener('keydown', (e: KeyboardEvent) => {
+				const items = Array.from(colorDropdown!.querySelectorAll('.color-circle')) as HTMLElement[];
+				const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+
+				if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+					e.preventDefault();
+					items[(currentIndex + 1) % items.length]?.focus();
+				} else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+					e.preventDefault();
+					items[(currentIndex - 1 + items.length) % items.length]?.focus();
+				} else if (e.key === 'Escape') {
+					e.preventDefault();
+					e.stopPropagation();
+					colorDropdown!.removeClass('show');
+					this.activeColorDropdown = null;
+					colorBtn.focus();
+				}
+			});
+
 			return colorDropdown;
 		};
 
@@ -1241,6 +1259,10 @@ export class VisualDashboardView extends ItemView {
 			this.closeAllColorDropdowns(dropdown);
 			dropdown.toggleClass('show', shouldOpen);
 			this.activeColorDropdown = shouldOpen ? dropdown : null;
+			if (shouldOpen) {
+				const firstItem = dropdown.querySelector('.color-circle') as HTMLElement;
+				if (firstItem) setTimeout(() => firstItem.focus(), 0);
+			}
 		});
 
 		// Close dropdown when clicking outside

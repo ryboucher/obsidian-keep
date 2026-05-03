@@ -361,7 +361,7 @@
     }
 }
 
-/* Reduced motion — disable drawer animations */
+/* Reduced motion — disable all non-essential animations */
 @media (prefers-reduced-motion: reduce) {
     .folder-drawer,
     .drawer-scrim {
@@ -373,6 +373,34 @@
         animation: none;
     }
     .folder-chevron {
+        transition: none;
+    }
+    .dashboard-card {
+        transition: none;
+    }
+    .mini-notes-grid {
+        transition: none;
+    }
+    .mini-notes-grid.grid-fading-out,
+    .mini-notes-grid.grid-fading-in {
+        opacity: 1;
+        transition: none;
+    }
+    .undo-toast {
+        animation: none;
+    }
+    .undo-toast-hiding {
+        transition: none;
+    }
+    .filter-chip,
+    .filter-chip-clear-all,
+    .tag-dropdown-item.tag-pill,
+    .filter-icon,
+    .folder-star-btn,
+    .card-pin-btn,
+    .card-color-btn,
+    .create-note-btn,
+    .search-wrapper {
         transition: none;
     }
 }
@@ -584,7 +612,7 @@
     border-radius: 16px;
     font-size: 12px;
     color: var(--text-normal);
-    transition: all 0.15s;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .filter-chip:hover {
@@ -647,7 +675,7 @@
     font-size: 12px;
     color: var(--text-muted);
     cursor: pointer;
-    transition: all 0.15s;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
     font-weight: 500;
 }
 
@@ -720,7 +748,7 @@
     border-radius: 12px;
     font-size: 12px;
     font-weight: 500;
-    transition: all 0.15s;
+    transition: background 0.15s, color 0.15s;
 }
 
 .tag-dropdown-item.tag-pill:hover {
@@ -733,12 +761,12 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 36px;
+    height: 36px;
     border-radius: 6px;
     cursor: pointer;
     color: var(--text-muted);
-    transition: all 0.15s;
+    transition: background 0.15s, color 0.15s;
 }
 
 .filter-icon:hover {
@@ -1339,6 +1367,19 @@
 .card-pin-btn:focus-visible {
     outline: 2px solid var(--masonry-theme-color, var(--interactive-accent));
     opacity: 1;
+}
+
+.drawer-folder-item:focus-visible {
+    outline: 2px solid var(--masonry-theme-color, var(--interactive-accent));
+    outline-offset: -2px;
+    background: var(--background-modifier-hover);
+}
+
+.folder-star-btn:focus-visible,
+.breadcrumb-clear:focus-visible,
+.color-circle:focus-visible {
+    outline: 2px solid var(--masonry-theme-color, var(--interactive-accent));
+    outline-offset: 1px;
 }
 
 /* Screen-reader only — visually hidden but announced by assistive tech */

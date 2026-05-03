@@ -15,7 +15,7 @@ export function formatDate(timestamp: number): string {
 	} else if (diffDays < 7) {
 		return `${diffDays}d ago`;
 	} else {
-		return date.toLocaleDateString('en-US', {
+		return date.toLocaleDateString(undefined, {
 			month: 'short',
 			day: 'numeric'
 		});

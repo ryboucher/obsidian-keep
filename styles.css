@@ -92,8 +92,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 36px;
+    height: 36px;
     cursor: pointer;
     color: var(--text-muted);
     background: var(--background-modifier-form-field);
@@ -125,7 +125,8 @@
     border-radius: 6px;
     padding: 4px 8px;
     transition: all 0.2s ease;
-    width: 340px;
+    flex: 1;
+    max-width: 340px;
 }
 
 .search-wrapper:focus-within {
@@ -547,10 +548,10 @@
 
 .card-pin-btn {
     position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 26px;
-    height: 26px;
+    top: 4px;
+    right: 4px;
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -589,10 +590,10 @@
 
 .card-color-btn {
     position: absolute;
-    top: 6px;
-    right: 36px;
-    width: 26px;
-    height: 26px;
+    top: 4px;
+    right: 40px;
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -636,11 +637,11 @@
 }
 
 .card-color-dropdown .color-circle {
-    width: 18px;
-    height: 18px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     cursor: pointer;
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    border: 1px solid var(--background-modifier-border);
     transition: border-width 0.1s ease;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
@@ -1041,6 +1042,26 @@
     
     .search-wrapper {
         width: 100%;
+    }
+}
+
+/* Touch devices — always show pin/color buttons (no hover state) */
+@media (hover: none) {
+    .card-pin-btn {
+        opacity: 0.6;
+    }
+
+    .card-color-btn {
+        opacity: 0.6;
+    }
+
+    .card-pin-btn.pinned {
+        opacity: 1;
+    }
+
+    .create-note-btn {
+        width: 44px;
+        height: 44px;
     }
 }
 
